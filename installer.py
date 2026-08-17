@@ -281,6 +281,34 @@ def backend_requires_compilation(backend: str) -> bool:
     return info.get("compile_binary", False) or info.get("compile_wheel", False)
 
 
+def get_installed_llama_info():
+    """Return {'version': str, 'vulkan': bool} if llama_cpp imports in the venv, else None.
+
+    Vulkan builds ship a ggml-vulkan DLL inside llama_cpp/lib, which
+    distinguishes them from CPU-only wheels of the same version."""
+    python_exe = VENV_DIR / "Scripts" / "python.exe"
+    if not python_exe.exists():
+        return None
+    probe = (
+        "import llama_cpp, pathlib; "
+        "lib = pathlib.Path(llama_cpp.__file__).parent / 'lib'; "
+        "vk = lib.exists() and any('vulkan' in p.name.lower() for p in lib.iterdir()); "
+        "print(llama_cpp.__version__); print('vulkan' if vk else 'cpu')"
+    )
+    try:
+        result = subprocess.run(
+            [str(python_exe), "-c", probe],
+            capture_output=True, text=True, timeout=60
+        )
+        if result.returncode == 0:
+            lines = result.stdout.strip().splitlines()
+            if len(lines) >= 2:
+                return {"version": lines[0].strip(), "vulkan": lines[1].strip() == "vulkan"}
+    except Exception:
+        pass
+    return None
+
+
 def detect_windows_version() -> str:
     """Detect Windows version and cache in global."""
     global WINDOWS_VERSION
@@ -708,8 +736,11 @@ def install_qt_webengine() -> bool:
 # PYTHON DEPENDENCY INSTALLATION
 # =============================================================================
 
-def install_python_deps(backend: str) -> bool:
-    """Install Python dependencies."""
+def install_python_deps(backend: str, skip_if_present: bool = False) -> bool:
+    """Install Python dependencies.
+
+    skip_if_present: on Check/Install runs, skip the llama-cpp-python
+    download/compile when a matching wheel is already in the venv."""
     global _INSTALLED_LLAMA_WHEEL_VERSION
     print_status("Installing Python dependencies...")
     try:
@@ -739,8 +770,17 @@ def install_python_deps(backend: str) -> bool:
 
         info = BACKEND_OPTIONS[backend]
 
+        existing = get_installed_llama_info() if skip_if_present else None
+
         if not info.get("compile_wheel"):
             wheel_version = LLAMACPP_PYTHON_PREBUILT_VERSION.lstrip("v")
+
+            if existing and existing["version"] == wheel_version and not existing["vulkan"]:
+                print_status(f"llama-cpp-python {wheel_version} (CPU wheel) already installed - skipping download")
+                _INSTALLED_LLAMA_WHEEL_VERSION = f"v{wheel_version}"
+                print_status("Python dependencies installed successfully")
+                return True
+
             sources = _get_prebuilt_wheel_urls()
 
             if not sources:
@@ -781,6 +821,14 @@ def install_python_deps(backend: str) -> bool:
                 return False
         else:
             build_flags = info.get("build_flags", {})
+            needs_vulkan = bool(build_flags.get("GGML_VULKAN"))
+
+            if existing and existing["vulkan"] == needs_vulkan:
+                build_kind = "Vulkan" if needs_vulkan else "CPU"
+                print_status(f"llama-cpp-python {existing['version']} ({build_kind} build) already installed - skipping compile")
+                _INSTALLED_LLAMA_WHEEL_VERSION = f"v{existing['version']}"
+                print_status("Python dependencies installed successfully")
+                return True
 
             if build_flags.get("GGML_VULKAN"):
                 print_status("Vulkan wheel build - checking Vulkan SDK...")
@@ -1568,7 +1616,7 @@ sys.exit(0)
         print()
 
         # Stream output live — user can see progress and it doesn't look like a hang.
-        # Timeout is a wall-clock deadline (15 min) rather than subprocess.run timeout 
+        # Timeout is a wall-clock deadline (30 min) rather than subprocess.run timeout 
         # which would kill a legitimately slow download mid-stream.
         proc = subprocess.Popen(
             [python_exe, str(script_path)],
@@ -1579,7 +1627,7 @@ sys.exit(0)
         )
 
         timed_out = False
-        deadline  = time.time() + 900   # 15-minute hard cap
+        deadline  = time.time() + 1800   # 30-minute hard cap
 
         for line in proc.stdout:
             # Suppress pip's "[notice] A new release of pip is available" noise
@@ -1595,7 +1643,7 @@ sys.exit(0)
         script_path.unlink(missing_ok=True)
 
         if timed_out:
-            print_status("Kokoro TTS download timed out (>15 min).  "
+            print_status("Kokoro TTS download timed out (>30 min).  "
                          "Check your internet connection and try again. ", False)
             return False
 
@@ -1615,40 +1663,65 @@ sys.exit(0)
 
 
 def download_embedding_model(model_name: str) -> bool:
-    """Download the selected embedding model to local cache."""
+    """Download the selected embedding model to local cache.
+
+    Skips the download when the model is already fully cached. Streams
+    output live (with Hugging Face progress bars) so slow connections show
+    progress instead of appearing to hang, under a 45-minute wall-clock
+    deadline rather than a short subprocess timeout."""
     python_exe = str(VENV_DIR / "Scripts" / "python.exe")
     cache_dir = str(BASE_DIR / "data" / "embedding_cache")
     cache_parent = str(BASE_DIR / "data")
 
     script = f'''
-import os, sys
+import os, sys, traceback
 os.environ["TRANSFORMERS_CACHE"] = r"{cache_dir}"
 os.environ["HF_HOME"] = r"{cache_parent}"
 os.environ["SENTENCE_TRANSFORMERS_HOME"] = r"{cache_dir}"
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 os.environ["CUDA_VISIBLE_DEVICES"] = ""
-print("[EMBED] Downloading and initializing embedding model: {model_name}")
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"   # show download progress
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+
+MODEL = "{model_name}"
+
+def finalize(model):
+    """Run a test encode to ensure all runtime files are loaded/cached."""
+    print("[EMBED] Running test encoding to finalize cache...", flush=True)
+    test = model.encode(["test"], convert_to_numpy=True, show_progress_bar=False)
+    print(f"[EMBED] Model fully initialized and cached (dim={{test.shape[1]}})", flush=True)
+
+# ── Phase 1: check local cache (offline) ────────────────────────────
+print(f"[EMBED] Checking local cache for: {{MODEL}}", flush=True)
 try:
     from sentence_transformers import SentenceTransformer
     from transformers import AutoTokenizer
-    
-    # Initialize model (downloads weights, config, pooling)
-    print("[EMBED] Loading SentenceTransformer model...")
-    model = SentenceTransformer("{model_name}", cache_folder=r"{cache_dir}")
-    
-    # Explicitly download and cache tokenizer files (vocab, merges, etc.)
-    print("[EMBED] Downloading and caching tokenizer files...")
-    tokenizer = AutoTokenizer.from_pretrained("{model_name}", cache_folder=r"{cache_dir}")
-    
-    # Run a test encode to ensure all runtime files are loaded/cached
-    print("[EMBED] Running test encoding to finalize cache...")
-    test = model.encode(["test"], convert_to_numpy=True, show_progress_bar=False)
-    
-    print(f"[EMBED] Model and tokenizer fully initialized and cached (dim={{test.shape[1]}})")
+except Exception as e:
+    print(f"[EMBED] Error importing libraries: {{e}}", flush=True)
+    traceback.print_exc()
+    sys.exit(1)
+
+try:
+    model = SentenceTransformer(MODEL, cache_folder=r"{cache_dir}", local_files_only=True)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL, cache_folder=r"{cache_dir}", local_files_only=True)
+    finalize(model)
+    print("[EMBED] Already cached - download skipped.", flush=True)
+    sys.exit(0)
+except Exception:
+    print("[EMBED] Not cached (or cache incomplete) - downloading...", flush=True)
+
+# ── Phase 2: download (progress bars stream to console) ─────────────
+try:
+    print(f"[EMBED] Downloading SentenceTransformer model: {{MODEL}}", flush=True)
+    model = SentenceTransformer(MODEL, cache_folder=r"{cache_dir}")
+
+    print("[EMBED] Downloading and caching tokenizer files...", flush=True)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL, cache_folder=r"{cache_dir}")
+
+    finalize(model)
     sys.exit(0)
 except Exception as e:
-    print(f"[EMBED] Error: {{e}}")
-    import traceback
+    print(f"[EMBED] Error: {{e}}", flush=True)
     traceback.print_exc()
     sys.exit(1)
 '''
@@ -1658,26 +1731,55 @@ except Exception as e:
         with open(script_path, 'w', encoding='utf-8') as f:
             f.write(script)
 
-        print_status(f"Downloading embedding model: {model_name}...")
-        result = subprocess.run(
+        print_status(f"Preparing embedding model: {model_name} — output below:")
+        print("  (bge-base is ~430 MB; progress shown live, 45-minute limit)")
+        print()
+
+        # Stream output live — user sees HF progress bars instead of a hang.
+        # Timeout is a wall-clock deadline rather than subprocess.run timeout
+        # which would kill a legitimately slow download mid-stream.
+        proc = subprocess.Popen(
             [python_exe, str(script_path)],
-            capture_output=True, text=True, timeout=600
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,   # HF progress bars print to stderr
+            text=True,
+            bufsize=1,                  # line-buffered
         )
 
-        if result.stdout:
-            for line in result.stdout.strip().split('\n'):
-                if line.strip():
-                    print(f"  {line}")
+        timed_out = False
+        deadline  = time.time() + 2700   # 45-minute hard cap
 
+        # Forward char-by-char so tqdm progress bars (which update with
+        # carriage returns, not newlines) render live instead of buffering.
+        while True:
+            ch = proc.stdout.read(1)
+            if ch == "":
+                if proc.poll() is not None:
+                    break
+                continue
+            sys.stdout.write(ch)
+            sys.stdout.flush()
+            if time.time() > deadline:
+                proc.kill()
+                timed_out = True
+                break
+
+        proc.wait()
         script_path.unlink(missing_ok=True)
 
-        if result.returncode == 0:
+        if timed_out:
+            print_status("Embedding model download timed out (>45 min). "
+                         "Check your internet connection and try again — "
+                         "already-downloaded files are kept and will be reused.", False)
+            return False
+
+        if proc.returncode == 0:
+            print()
             print_status(f"Embedding model installed: {model_name}")
             return True
         else:
-            print_status("Embedding model download failed", False)
-            if result.stderr:
-                print(f"  Error: {result.stderr[:200]}")
+            print()
+            print_status("Embedding model download failed — see output above for details.", False)
             return False
 
     except Exception as e:
@@ -1895,7 +1997,8 @@ def run_installer():
              return
 
     # Install Python dependencies (includes llama-cpp-python wheel) - NOW FATAL
-    if not install_python_deps(backend):
+    # Check/Install reuses an existing matching llama-cpp-python wheel.
+    if not install_python_deps(backend, skip_if_present=not is_clean_install):
         print_status("Python dependency installation failed. Installation aborted.", False)
         return
 
