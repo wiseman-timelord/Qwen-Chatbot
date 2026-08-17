@@ -1947,7 +1947,12 @@ def launch_display():
     .send-button-green { background-color: green !important; color: white !important }
     .send-button-orange { background-color: orange !important; color: white !important }
     .send-button-red { background-color: red !important; color: white !important }
-    .scrollable .message { white-space: pre-wrap; word-break: break-word; }
+    /* white-space must stay 'normal' here: the markdown renderer leaves
+       newline text nodes between block elements (</p> <ul> <li> ...), and
+       pre-wrap renders each of those as a visible blank line — most obvious
+       as empty lines between every bullet of a list. Single newlines inside
+       prose are already honoured via the chatbot's line_breaks=True (<br>). */
+    .scrollable .message { white-space: normal; word-break: break-word; }
     .hide-label { display:none !important; }
     .message { line-height: 1.4 !important; }
     .progress-indicator {
@@ -2073,6 +2078,19 @@ def launch_display():
     .message p,
     .message-content p,
     .prose.chatbot p {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+    }
+    /* Same treatment for lists: Gradio's stylesheet puts vertical margins on
+       ul/ol/li, which reads as blank lines between bullets. */
+    .message-wrap > div ul,
+    .message-wrap > div ol,
+    .message ul,
+    .message ol {
+        margin-top: 0 !important;
+        margin-bottom: 0 !important;
+    }
+    .message li {
         margin-top: 0 !important;
         margin-bottom: 0 !important;
     }
