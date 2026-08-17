@@ -1710,6 +1710,7 @@ def conversation_display(
     session_messages.append({'role': 'assistant', 'content': "AI-Chat:\n"})
     accumulated_response = ""
 
+    cfg.GENERATION_ACTIVE = True
     try:
         for chunk in get_response_stream(
             session_log=session_messages,
@@ -1761,6 +1762,8 @@ def conversation_display(
     except Exception as e:
         accumulated_response = f"Error: {str(e)}"
         session_messages[-1]['content'] = accumulated_response
+    finally:
+        cfg.GENERATION_ACTIVE = False
 
     # Format Response phase
     yield yield_progress("Format Response")
@@ -3382,6 +3385,8 @@ def launch_display():
             if cfg.LOADING_MODE != "Mem-Lock":
                 return llm_st, loaded_st, gr.update()
             if not loaded_st or llm_st is None:
+                return llm_st, loaded_st, gr.update()
+            if cfg.GENERATION_ACTIVE:
                 return llm_st, loaded_st, gr.update()
             if _last_response_time == 0.0:
                 return llm_st, loaded_st, gr.update()

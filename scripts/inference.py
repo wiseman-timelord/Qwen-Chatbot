@@ -1025,6 +1025,11 @@ def calculate_single_model_gpu_layers_with_layers(
 def unload_models(llm_state, models_loaded_state):
     """Graceful model unload with aggressive Vulkan cleanup."""
     import gc
+    if cfg.GENERATION_ACTIVE:
+        # Freeing the llama context while another thread is inside llama_decode
+        # crashes the process (access violation), so refuse and keep the model.
+        cfg.set_status("Generation in progress - unload skipped", console=True)
+        return "Generation in progress - unload skipped", llm_state, models_loaded_state
     if not models_loaded_state or llm_state is None:
         cfg.set_status("Model off", console=True)
         return "Model off", None, False

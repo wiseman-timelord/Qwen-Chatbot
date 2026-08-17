@@ -88,6 +88,7 @@ SESSION_FILE_FORMAT = "%Y%m%d_%H%M%S"
 session_label = ""
 current_session_id = None
 MODELS_LOADED = False
+GENERATION_ACTIVE = False  # True while a response stream is running; blocks unload
 AVAILABLE_MODELS = None
 SESSION_ACTIVE = False
 MODEL_NAME = "Select_a_model..."
