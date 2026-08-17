@@ -4,10 +4,9 @@ Status - Alpha; simplified Windows-only, Qwen-only fork of [Chat-Gradio-Gguf](ht
 ## Description
 A high-quality local chat interface for Qwen GGUF models on Windows 10 (WSL not required), using Python 3.12. An optimal number of features for a ChatBot, as well as, dynamic buttons/panels on the interface and websearch and RAG and TTS and archiving of sessions, and all on local models, so no imposed, limitations or guidelines (model dependent). This tool provides a comparable interface to premium non-agentic AI services, where the configuration is intended to be intelligent, without over-complication. The program uses offline libraries (apart from websearch) instead of, online services or repeat download or registration.
 
-### Focus
-- **Windows 10 22H2** — single-mode scripts, no Linux/dual-mode code (may work on Windows 11, but no version-specific code).
-- **Python 3.12** — no version-specific code for other Python versions (3.13 unsupported: Kokoro TTS requires <3.13).
-- **Qwen v3 to v3.8, 1B-35B, GGUF** — including variants such as HuiHui abliterated/uncensored builds. Detection is GGUF-metadata driven (architecture keys `qwen3`, `qwen3moe`, `qwen35`, `qwen36`, etc.), so renamed community uploads still resolve correctly.
+### Media
+- As you can see the program works, however, the Qwen3.6-14B-FableVibes models are naff, this is probably because there is no such thing as Qwen3.6 in 14B, so stick to Qwen3.5 in 9b/14B, or use a Qwen 3.6/3.8 in 27b/35B, is my advice.
+![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/Interactions_Page.jpg)
 
 ### Features
 - **Qt-Web Custom Browser**: The interface uses Qt6 WebEngine with Gradio, appearing as a regular application; your default browser is untouched.
@@ -24,16 +23,16 @@ A high-quality local chat interface for Qwen GGUF models on Windows 10 (WSL not 
 - **Virtual Environment**: Isolated Python setup in `.venv` with `data` directory for constants, vectors, temp, and history.
 
 ## Requirements
-- Windows 10 (22H2 focus; run as Administrator)
-- Python 3.12
-- A Qwen v3-v3.8 GGUF model, 1B-35B (e.g. from HuggingFace, including HuiHui variants)
-- Optional: Vulkan-capable GPU for acceleration
+- **Windows 10 22H2** — no Linux/dual-mode code (may work on Windows 11, but no version-specific code).
+- **Python 3.12** — no version-specific code for other Python versions (3.13 unsupported: Kokoro TTS requires <3.13).
+- **Qwen v3 to v3.8, 1B-35B, GGUF** — including variants such as HuiHui abliterated/uncensored builds.
 
 ## Usage
 1. Right-click `Qwen-Windows-Gguf.bat` and Run as Administrator.
 2. Select `2. Run Installation` to create the `.venv` and install the llama.cpp backend and dependencies.
 3. Select `1. Run Main Program` to launch the interface.
 4. On the Configuration page, set your model folder, pick the model, and load it.
+5. Back on Interactions page, use the features and run your iterations.
 
 ## Structure
 ```
