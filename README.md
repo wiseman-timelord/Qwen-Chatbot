@@ -5,7 +5,7 @@ Status - Alpha; simplified Windows-only, Qwen-only fork of [Chat-Gradio-Gguf](ht
 A high-quality local chat interface for Qwen GGUF models on Windows 10 (WSL not required), using Python 3.12. An optimal number of features for a ChatBot, as well as, dynamic buttons/panels on the interface and websearch and RAG and TTS and archiving of sessions, and all on local models, so no imposed, limitations or guidelines (model dependent). This tool provides a comparable interface to premium non-agentic AI services, where the configuration is intended to be intelligent, without over-complication. The program uses offline libraries (apart from websearch) instead of, online services or repeat download or registration.
 
 ### Media
-- As you can see the program works, however, the Qwen3.6-14B-FableVibes models are naff, this is probably because there is no such thing as Qwen3.6 in 14B, so stick to Qwen3.5 in 9b/14B, or use a Qwen 3.6/3.8 in 27b/35B, is my advice.
+- As you can see the program works, however, the Qwen3.6-14B-FableVibes models are naff, this is probably because there is no such thing as Qwen 3.6/3.7 in 9B/14B, so stick to Qwen3.5 in 9b/14B, or use a Qwen 3.6/3.8 in 27b/35B, is my advice. I wouldnt bother with 4B models, as they are somewhat a joke for answers requiring accuracy. 
 ![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/Interactions_Page.jpg)
 
 ### Features
