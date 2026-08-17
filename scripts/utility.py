@@ -1,5 +1,5 @@
 # scripts/utility.py
-# v2: Windows 10-11 / Ubuntu 24-25 / Python 3.11-3.13 / Gradio 5.x
+# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x
 
 # Standard library imports
 import re
@@ -41,9 +41,8 @@ from scripts.tools import (
 # =============================================================================
 _nlp_model = None
 
-# NOTE: Platform-specific imports (win32com, pythoncom) are imported lazily
-# inside the functions that need them, as cfg.PLATFORM is not set until after
-# the launcher parses command-line arguments.
+# NOTE: Windows-specific imports (win32com, pythoncom) are imported lazily
+# inside the functions that need them to keep startup cost low.
 
 def _get_spacy():
     """Lazy import spaCy — deferred to avoid heavy startup cost."""
@@ -61,13 +60,6 @@ def beep() -> None:
     """Play a notification beep if enabled."""
     if not getattr(cfg, "BLEEP_ON_EVENTS", False):
         return
-    if cfg.PLATFORM == "windows":
-        _beep_windows()
-    elif cfg.PLATFORM == "linux":
-        _beep_linux()
-
-
-def _beep_windows() -> None:
     try:
         import winsound
         winsound.Beep(1000, 150)
@@ -77,26 +69,6 @@ def _beep_windows() -> None:
             winsound.MessageBeep(winsound.MB_OK)
         except Exception:
             pass
-
-
-def _beep_linux() -> None:
-    methods = [
-        lambda: subprocess.run(['beep', '-f', '1000', '-l', '150'], timeout=2, check=True,
-                               stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL),
-        lambda: subprocess.run(['paplay', '/usr/share/sounds/freedesktop/stereo/complete.oga'],
-                               timeout=2, check=True, stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
-                if os.path.exists('/usr/share/sounds/freedesktop/stereo/complete.oga')
-                else (_ for _ in ()).throw(Exception()),
-        lambda: subprocess.run(['play', '-n', 'synth', '0.15', 'sin', '1000'], timeout=2, check=True,
-                               stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL),
-        lambda: print("\a", end="", flush=True),
-    ]
-    for method in methods:
-        try:
-            method()
-            return
-        except Exception:
-            continue
 
 
 # =============================================================================
@@ -141,8 +113,8 @@ def detect_cpu_config():
         cfg.CPU_THREADS = 4
 
 
-def get_available_gpus_windows():
-    """Retrieve available GPUs on Windows using multiple methods."""
+def get_available_gpus():
+    """Retrieve available GPUs using multiple methods."""
     try:
         output = subprocess.check_output("wmic path win32_VideoController get name", shell=True).decode()
         gpus = [line.strip() for line in output.split('\n') if line.strip() and 'Name' not in line]
@@ -166,74 +138,23 @@ def get_available_gpus_windows():
     return ["CPU Only"]
 
 
-def get_available_gpus():
-    """Get list of available GPUs based on platform."""
-    if cfg.PLATFORM == "windows":
-        return get_available_gpus_windows()
-    else:
-        return get_available_gpus_linux()
-
-
-def get_available_gpus_linux():
-    """Retrieve available GPUs on Linux."""
-    gpus = []
-
-    try:
-        output = subprocess.check_output("lspci | grep -i vga", shell=True).decode()
-        for line in output.strip().split('\n'):
-            if line:
-                parts = line.split(': ')
-                if len(parts) > 1:
-                    gpus.append(parts[1].strip()[:50])
-    except Exception:
-        pass
-
-    if not gpus:
-        try:
-            output = subprocess.check_output(
-                "vulkaninfo --summary 2>/dev/null | grep deviceName", shell=True
-            ).decode()
-            for line in output.strip().split('\n'):
-                if 'deviceName' in line:
-                    name = line.split('=')[1].strip() if '=' in line else line.split(':')[1].strip()
-                    gpus.append(name[:50])
-        except Exception:
-            pass
-
-    return gpus if gpus else ["CPU Only"]
-
-
 def get_cpu_info():
     """Get CPU information for display."""
     try:
         cpu_info = []
 
-        if cfg.PLATFORM == "windows":
-            try:
-                output = subprocess.check_output("wmic cpu get name", shell=True).decode()
-                for line in output.split('\n'):
-                    line = line.strip()
-                    if line and 'Name' not in line:
-                        cpu_info.append({
-                            "label": line[:50],
-                            "cores": cfg.CPU_PHYSICAL_CORES,
-                            "threads": cfg.CPU_LOGICAL_CORES
-                        })
-            except Exception:
-                pass
-        else:
-            try:
-                with open('/proc/cpuinfo', 'r') as f:
-                    content = f.read()
-                model_match = re.search(r'model name\s*:\s*(.+)', content)
-                if model_match:
+        try:
+            output = subprocess.check_output("wmic cpu get name", shell=True).decode()
+            for line in output.split('\n'):
+                line = line.strip()
+                if line and 'Name' not in line:
                     cpu_info.append({
-                        "label": model_match.group(1).strip()[:50],
+                        "label": line[:50],
                         "cores": cfg.CPU_PHYSICAL_CORES,
                         "threads": cfg.CPU_LOGICAL_CORES
                     })
-            except Exception:
-                pass
+        except Exception:
+            pass
 
         if not cpu_info:
             cpu_info.append({

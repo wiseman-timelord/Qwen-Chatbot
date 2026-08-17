@@ -1,9 +1,9 @@
-REM .\Chat-Gradio-Gguf.bat
+REM .\Qwen-Windows-Gguf.bat
 @echo off
 setlocal enabledelayedexpansion
 
 REM ==== Static Configuration ====
-set "TITLE=Chat-Gradio-Gguf"
+set "TITLE=Qwen-Windows-Gguf"
 title %TITLE%
 mode con cols=82 lines=25
 powershell -noprofile -command "& { $w = $Host.UI.RawUI; $b = $w.BufferSize; $b.Height = 6000; $w.BufferSize = $b; }"
@@ -39,7 +39,7 @@ echo ---------------------------------------------------------------------------
 goto :eof
 
 REM ============================================================
-REM  Detect best Python 3.11-3.13 from common locations
+REM  Detect Python 3.12 from common locations
 REM ============================================================
 :DetectPython
 set "PYTHON_EXE="
@@ -62,8 +62,8 @@ if not defined PYTHON_EXE (
 )
 
 if not defined PYTHON_EXE (
-    echo Error: No compatible Python 3.11-3.13 found.
-    echo Please install Python 3.11, 3.12, or 3.13 from python.org
+    echo Error: No compatible Python 3.12 found.
+    echo Please install Python 3.12 from python.org
     pause
     goto :end_of_script
 )
@@ -86,7 +86,7 @@ for /f "tokens=2 delims= " %%V in ('"%pyexe%" --version 2^>^&1') do (
     for /f "tokens=1,2 delims=." %%A in ("%%V") do (
         set "MAJ=%%A"
         set "MIN=%%B"
-        if !MAJ!==3 if !MIN! GEQ 11 if !MIN! LEQ 13 (
+        if !MAJ!==3 if !MIN! GEQ 11 if !MIN! LEQ 12 (
             if !MIN! GTR !BEST_MINOR! (
                 set "BEST_MAJOR=!MAJ!"
                 set "BEST_MINOR=!MIN!"
@@ -102,7 +102,7 @@ REM ==== Main Menu ====
 CLS
 color 0F
 call :DisplaySeparatorThick
-echo     Chat-Gradio-Gguf: Batch Menu
+echo     Qwen-Windows-Gguf: Batch Menu
 call :DisplaySeparatorThick
 echo.
 echo.
@@ -137,7 +137,7 @@ REM ==== Option 1: Run Main Program ====
 cls
 color 06
 call :DisplaySeparatorThick
-echo     Chat-Gradio-Gguf: Launcher
+echo     Qwen-Windows-Gguf: Launcher
 call :DisplaySeparatorThick
 echo.
 echo Starting %TITLE%...
@@ -146,7 +146,7 @@ set PYTHONUNBUFFERED=1
 REM Call the venv Python directly - no activate/deactivate needed.
 REM Python resolves its own site-packages relative to its executable location,
 REM so the venv works correctly even when the project folder has been moved.
-.\.venv\Scripts\python.exe -u .\launcher.py windows
+.\.venv\Scripts\python.exe -u .\launcher.py
 if errorlevel 1 (
     echo Error launching %TITLE%
     pause
@@ -159,14 +159,14 @@ REM ==== Option 2: Run Installation ====
 cls
 color 06
 call :DisplaySeparatorThick
-echo     Chat-Gradio-Gguf: Installer
+echo     Qwen-Windows-Gguf: Installer
 call :DisplaySeparatorThick
 echo.
 
 REM Detect Python before installation
 call :DetectPython
 
-"%PYTHON_EXE%" .\installer.py windows
+"%PYTHON_EXE%" .\installer.py
 if errorlevel 1 (
     echo Error during installation
     pause

@@ -1,5 +1,5 @@
 # scripts/configure.py
-# v2: Targets Windows 10-11 / Ubuntu 24-25 / Python 3.11-3.12 / Gradio 5.x / PyQt6
+# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
 
 import json
 import configparser
@@ -23,12 +23,11 @@ PREFERENCES_PATH   = Path("data/preferences.json")
 # SYSTEM STATE VARIABLES
 # =============================================================================
 
-# System constants (platform, backend, etc.) loaded from data/constants.ini
-PLATFORM = None
+# System constants (backend, versions, etc.) loaded from data/constants.ini
 BACKEND_TYPE = "CPU_CPU"
 VULKAN_AVAILABLE = False
 LAYER_ALLOCATION_MODE = "SRAM_ONLY"
-OS_VERSION = None  # Ubuntu version or Windows version string
+OS_VERSION = None  # Windows version string
 WINDOWS_VERSION = None  # Windows-specific version (10, 11)
 EMBEDDING_BACKEND = "sentence_transformers"
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
@@ -210,7 +209,7 @@ STATUS_MESSAGES = {
 # =============================================================================
 CHAT_FORMAT_MAP = {
     # ── Qwen family ───────────────────────────────────────────────────────────
-    # All Qwen3/3.5/3.6 variants ship with embedded Jinja chat templates that
+    # All Qwen3+ variants ship with embedded Jinja chat templates that
     # handle the enable_thinking flag and <think> tags natively.
     'qwen2'      : None,
     'qwen3'      : None,
@@ -220,37 +219,6 @@ CHAT_FORMAT_MAP = {
     'qwen35'     : None,
     'qwen3_5moe' : None,
     'qwen35moe'  : None,
-    # ── Llama family ──────────────────────────────────────────────────────────
-    'llama'      : 'llama-2',
-    # ── DeepSeek family ───────────────────────────────────────────────────────
-    # None = use embedded Jinja chat template.
-    # 'deepseek2' is NOT a valid llama-cpp-python chat_format string.
-    # DeepSeek V2/V3 and any community GLM quant that reports deepseek2 as its
-    # GGUF architecture key both ship with embedded templates that work correctly
-    # when chat_format is left unset (None).
-    'deepseek2'  : None,
-    # ── Gemma family ──────────────────────────────────────────────────────────
-    # Gemma 4 uses embedded chat template; the <|think|> trigger token is
-    # injected into the system prompt by get_system_message() when appropriate.
-    'gemma3'     : 'gemma',
-    'gemma3n'    : 'gemma',
-    'gemma4'     : None,
-    # ── GLM family ────────────────────────────────────────────────────────────
-    'glm4'       : None,
-    'glm4moe'    : None,
-    'chatglm'    : None,
-    # ── Kimi family ───────────────────────────────────────────────────────────
-    'kimi'       : None,
-    # ── GPT-OSS family ────────────────────────────────────────────────────────
-    # GPT-OSS (OpenAI) uses the Harmony chat template (embedded in GGUF).
-    # Reasoning/thinking is always active via the <|channel|>analysis channel.
-    'gpt2'       : None,
-    # ── Granite family ────────────────────────────────────────────────────────
-    # Granite 4.0 / 4.1 — dense instruct models, no thinking mode.
-    # Uses <|start_of_role|> / <|end_of_role|> role tokens via embedded template.
-    'granite'    : None,
-    # ── Misc ──────────────────────────────────────────────────────────────────
-    'stablelm'   : 'chatml',
 }
 
 # =============================================================================
@@ -274,27 +242,18 @@ handling_keywords = {
     "roleplay": ["rpg", "role", "adventure"],
 
     "moe": [
-        "moe", "mixtral", "deepseek-v2", "gpt-oss", "harmony",
-        "qwen2moe", "qwen2.5moe",
-        "dbrx", "arctic", "grok", "a3b", "a22b", "a14b",
-        "glm-4.5", "glm-4.6", "glm-4.7", "glm-5",
-        "glm4.5", "glm4.6", "glm4.7", "glm5",
-        "kimi-k2", "kimi",
+        "moe", "a3b", "a22b", "a14b",
     ],
 
     "vision": [
-        "vision", "llava", "moondream", "minicpm", "qvq", "apriel",
+        "vision", "qvq",
         "qwen3.5-vl", "qwen3.5vl", "qwen3-vl", "qwen3vl", "qwen2.5-vl",
-        "gemma3-vl", "gemma-3-vl", "gemma4-vl", "gemma-4-vl",
-        "glm-4v", "glm4v", "glm4.1v", "glm-4.1v", "glm4.6v", "glm-4.6v",
     ],
 
     # ── thinking_capable ──────────────────────────────────────────────────────
     # Models that natively emit structured thinking blocks during generation.
-    # The flag causes get_system_message() to inject a thinking-format hint and
-    # (for Gemma 4) the <|think|> activation token into the system prompt.
-    # Mistral Small 3.x and Granite 4/4.1 are intentionally absent — they are
-    # standard instruct models with no native thinking mode.
+    # The flag causes get_system_message() to inject a thinking-format hint
+    # into the system prompt.
     "thinking_capable": [
         # ── Qwen family ───────────────────────────────────────────────────────
         # Qwen3: all sizes always think.
@@ -304,21 +263,6 @@ handling_keywords = {
         "qwen3",
         "qwen3.5", "qwen35", "qwen3_5",    # Qwen3.5 — all size variants
         "qwen3.6", "qwen36", "qwen3_6",    # Qwen3.6 — all size variants
-        # ── GLM family ────────────────────────────────────────────────────────
-        # GLM 4.6 / 4.7 / 5 MoE: Harmony-style <|channel|>analysis blocks.
-        # Dense GLM variants (glm4 arch) are excluded — only MoE GLM thinks.
-        "glm-4.6", "glm4.6",
-        "glm-4.7", "glm4.7",
-        "glm-5",   "glm5",
-        # ── Gemma 4 ───────────────────────────────────────────────────────────
-        # All Gemma 4 sizes emit <|channel>thought ... <channel|> blocks when
-        # thinking is active.  E2B/E4B can disable it; 26B/31B always think.
-        # The system prompt injection adds <|think|> to activate the channel.
-        "gemma-4", "gemma4",
-        # ── GPT-OSS ───────────────────────────────────────────────────────────
-        # OpenAI GPT-OSS 20B and 120B: Harmony protocol, always emits
-        # <|channel|>analysis<|message|> reasoning blocks before the answer.
-        "gpt-oss", "gpt_oss",
     ],
 }
 
@@ -330,7 +274,7 @@ class ContextInjector:
     """
     Universal RAG with support for both file attachments AND large pasted inputs.
     Provides unlimited context through intelligent chunking and retrieval.
-    Uses sentence-transformers for embeddings (cross-platform Win 10-11, Ubuntu 24-25).
+    Uses sentence-transformers for embeddings.
     """
     def __init__(self):
         self.embedding = None
@@ -627,14 +571,13 @@ def load_system_ini():
 
         system = config['system']
 
-        global PLATFORM, BACKEND_TYPE, VULKAN_AVAILABLE, EMBEDDING_MODEL_NAME
+        global BACKEND_TYPE, VULKAN_AVAILABLE, EMBEDDING_MODEL_NAME
         global EMBEDDING_BACKEND, GRADIO_VERSION, LLAMA_CLI_PATH, LLAMA_BIN_PATH
         global OS_VERSION, WINDOWS_VERSION, KOKORO_LANG_CODE
         global GRAPHICS_ACCELERATION, QT_VERSION, DX_FEATURE_LEVEL
         global LLAMA_WHEEL_VERSION
         global TTS_PACK, TTS_ENABLED_VOICES, TTS_DEFAULT_VOICE_ID, TTS_DEFAULT_VOICE_NAME
 
-        PLATFORM = system.get('platform')
         BACKEND_TYPE = system.get('backend_type', 'CPU_CPU')
         VULKAN_AVAILABLE = system.getboolean('vulkan_available', False)
         GRAPHICS_ACCELERATION = system.getboolean('browser_acceleration', True)
@@ -650,7 +593,6 @@ def load_system_ini():
         LLAMA_BIN_PATH = system.get('llama_bin_path', None)
         LLAMA_WHEEL_VERSION = system.get('llama_wheel_version', None)
 
-        print(f"[INI] Platform: {PLATFORM}")
         print(f"[INI] Backend: {BACKEND_TYPE}")
         print(f"[INI] Vulkan: {VULKAN_AVAILABLE}")
         print(f"[INI] Graphics Acceleration: {GRAPHICS_ACCELERATION}")
@@ -662,15 +604,11 @@ def load_system_ini():
         # Single source of truth: os_version
         OS_VERSION = system.get('os_version', 'unknown')
 
-        if PLATFORM == "windows":
-            # Extract raw version number for logic if needed
-            WINDOWS_VERSION = OS_VERSION.replace("Windows ", "") if OS_VERSION.startswith("Windows ") else "unknown"
-        else:
-            WINDOWS_VERSION = None
+        # Extract raw version number for logic if needed
+        WINDOWS_VERSION = OS_VERSION.replace("Windows ", "") if OS_VERSION.startswith("Windows ") else "unknown"
 
         print(f"[INI] OS Version: {OS_VERSION}")
-        if PLATFORM == "windows":
-            print(f"[INI] Windows Version: {WINDOWS_VERSION}")
+        print(f"[INI] Windows Version: {WINDOWS_VERSION}")
 
         # Load TTS configuration from [tts] section (written by installer).
         # These are installer decisions and are authoritative — the JSON never
@@ -831,10 +769,7 @@ def _apply_configuration(values: dict):
     TTS_VOICE_NAME    = get("tts_voice_name")
     MAX_TTS_LENGTH    = get("max_tts_length")
     SOUND_SAMPLE_RATE = get("sound_sample_rate")
-    if PLATFORM == "windows":
-        SOUND_OUTPUT_DEVICE = "Default Sound Device"
-    else:
-        SOUND_OUTPUT_DEVICE = get("sound_output_device") or "default"
+    SOUND_OUTPUT_DEVICE = "Default Sound Device"
 
 
 def _apply_preferences(values: dict):

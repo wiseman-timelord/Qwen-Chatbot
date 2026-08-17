@@ -1,5 +1,5 @@
 # scripts/inference.py
-# v2: Windows 10-11 / Ubuntu 24-25 / Python 3.11-3.13 / Gradio 5.x
+# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / Qwen GGUF models
 
 """
 Consolidated inference module combining model loading/management and prompt generation.
@@ -32,14 +32,6 @@ THINKING_CAPABLE_ARCHS = {
     'qwen3',    'qwen3moe',
     'qwen35',   'qwen3_5',   'qwen35moe',  'qwen3_5moe',   # Qwen3.5
     'qwen36',   'qwen3_6',   'qwen36moe',                   # Qwen3.6
-    # GLM MoE — bare thinking content + </think>, or <|channel|>analysis channel
-    # Dense GLM (glm4, chatglm) intentionally excluded — only MoE variants think.
-    'glm4moe',
-    # Gemma 4 — <|channel>thought ... <channel|> (no trailing pipe after 'channel')
-    'gemma4',
-    # GPT-OSS — Harmony protocol, always-on <|channel|>analysis channel
-    # Reports as 'gpt2' arch in GGUF.
-    'gpt2',
 }
 
 # ============================================================================
@@ -59,7 +51,7 @@ If the search results don't contain relevant current information, say so clearly
 Summarize the key information focusing on relevance and recency.""",
 
     # ── Thinking format instruction ───────────────────────────────────────────
-    # Wording optimised for Qwen3/3.5/3.6, GLM 4.x MoE, Gemma 4, GPT-OSS.
+    # Wording optimised for Qwen3/3.5/3.6.
     # The structural example gives the model a completion pattern rather than a
     # vague rule. "Do not place any text before <think>" eliminates the preamble
     # behaviour where a model starts answering before opening its think block.
@@ -77,17 +69,12 @@ Summarize the key information focusing on relevance and recency.""",
     "vision": "You are a helpful AI assistant with vision capabilities. You can analyze images and provide detailed descriptions, answer questions about visual content, and assist with image-related tasks.",
     "code": "",    # Code models use instruct format
     "harmony": "", # MoE models don't use system prompts
-
-    # ── Gemma 4 thinking activation token ────────────────────────────────────
-    # Must be prepended to the system prompt to activate Gemma 4's
-    # <|channel>thought ... <channel|> thinking channel via its chat template.
-    "gemma4_thinking": "<|think|>",
 }
 
 
 def get_system_message(is_uncensored=False, is_nsfw=False, web_search_enabled=False,
                        is_reasoning=False, is_roleplay=False, is_code=False, is_moe=False,
-                       is_vision=False, is_thinking_capable=False, is_gemma4=False):
+                       is_vision=False, is_thinking_capable=False):
     """Build system message based on model characteristics."""
     if is_code or is_moe:
         return ""
@@ -110,7 +97,6 @@ def get_system_message(is_uncensored=False, is_nsfw=False, web_search_enabled=Fa
         # Thinking-capable models naturally emit thinking blocks.
         # Inject the format hint so all models produce consistent <think></think>
         # tags for reliable real-time streaming parse.
-        # Mistral Small 3.x and Granite 4/4.1 never reach this branch.
         system += " " + PROMPT_TEMPLATES["reasoning"]
 
     if is_nsfw:
@@ -121,12 +107,6 @@ def get_system_message(is_uncensored=False, is_nsfw=False, web_search_enabled=Fa
     system = system.replace("\n", " ").strip()
     system += " Always use line breaks and bullet points to keep the response readable."
 
-    # ── Gemma 4: prepend <|think|> activation token ───────────────────────────
-    # Must be at the very start of the system prompt so Gemma 4's Jinja chat
-    # template activates the <|channel>thought thinking channel.
-    if is_gemma4 and is_thinking_capable:
-        system = PROMPT_TEMPLATES["gemma4_thinking"] + system
-
     return system
 
 
@@ -135,19 +115,13 @@ def get_system_message(is_uncensored=False, is_nsfw=False, web_search_enabled=Fa
 # ============================================================================
 
 def get_chat_format(metadata, model_name=""):
-    """Determine the chat format based on architecture (filename fallback for Llama 3.x)."""
+    """Determine the chat format based on architecture.
+
+    Qwen GGUFs ship embedded Jinja chat templates, so this returns None
+    (use embedded template) for all known Qwen architecture keys.
+    """
     architecture = metadata.get('general.architecture', 'unknown')
-    fmt = CHAT_FORMAT_MAP.get(architecture, 'llama-2')
-
-    if fmt == 'llama2':
-        fmt = 'llama-2'
-
-    if architecture == 'llama' and fmt == 'llama-2' and model_name:
-        name_lower = model_name.lower()
-        if any(k in name_lower for k in ('llama-3', 'llama3', 'llama_3')):
-            fmt = 'llama-3'
-
-    return fmt
+    return CHAT_FORMAT_MAP.get(architecture, None)
 
 
 def get_model_size(model_path: str) -> float:
@@ -227,7 +201,6 @@ def get_model_settings(model_name):
     is_vision           = any(k in model_name_lower for k in handling_keywords["vision"])
     is_thinking_capable = any(k in model_name_lower
                                for k in handling_keywords.get("thinking_capable", []))
-    is_gemma4           = any(k in model_name_lower for k in ('gemma-4', 'gemma4'))
 
     # ── Architecture / mmproj-based secondary checks ─────────────────────────
     try:
@@ -237,13 +210,12 @@ def get_model_settings(model_name):
         meta = get_model_metadata(model_path_str)
         arch = meta.get('general.architecture', '')
 
-        if not is_moe and arch in ('glm4moe', 'kimi'):
+        if not is_moe and arch.endswith('moe'):
             is_moe = True
 
         UNIVERSAL_VL_ARCHS = {
             'qwen3', 'qwen3moe', 'qwen36', 'qwen36moe',
             'qwen3_5', 'qwen3_5moe', 'qwen35', 'qwen35moe',
-            'gemma4', 'glm4',
         }
         if not is_vision and arch in UNIVERSAL_VL_ARCHS:
             mmproj = find_mmproj_file(model_path_str)
@@ -266,10 +238,6 @@ def get_model_settings(model_name):
                 is_thinking_capable = True
                 print(f"[SETTINGS] Auto-detected thinking-capable via chat template")
 
-        if not is_gemma4 and arch == 'gemma4':
-            is_gemma4 = True
-            print(f"[SETTINGS] Auto-detected Gemma 4 via arch key")
-
     except Exception:
         pass
 
@@ -283,7 +251,6 @@ def get_model_settings(model_name):
         "is_moe":              is_moe,
         "is_vision":           is_vision,
         "is_thinking_capable": is_thinking_capable,
-        "is_gemma4":           is_gemma4,
         "detected_keywords": [kw for kw in handling_keywords
                                if any(k in model_name_lower for k in handling_keywords[kw])]
     }
@@ -452,7 +419,7 @@ def get_model_metadata(model_path: str) -> dict:
     name_lower = path.name.lower()
 
     # ORDER MATTERS — most-specific patterns first to prevent short prefixes
-    # matching inside longer tokens (e.g. 'glm4' matching inside 'glm4moe').
+    # matching inside longer tokens.
     arch_map = {
         # ── Qwen family ───────────────────────────────────────────────────────
         'qwen3.6'        : ('qwen3',  36, 262144),
@@ -468,50 +435,6 @@ def get_model_metadata(model_path: str) -> dict:
         'qwen2.5'        : ('qwen2',  28, 131072),
         'qwen2'          : ('qwen2',  32, 32768),
         'qwen'           : ('qwen2',  28, 32768),
-        # ── Gemma family ──────────────────────────────────────────────────────
-        'gemma-4'        : ('gemma4',  62, 131072),
-        'gemma4'         : ('gemma4',  62, 131072),
-        'gemma3n'        : ('gemma3n', 26, 131072),
-        'gemma-3n'       : ('gemma3n', 26, 131072),
-        'gemma-3'        : ('gemma3',  62, 131072),
-        'gemma3'         : ('gemma3',  62, 131072),
-        'gemma'          : ('gemma3',  46, 32768),
-        # ── GLM family ────────────────────────────────────────────────────────
-        'glm-4.7-flash'  : ('glm4',    40, 131072),
-        'glm4.7-flash'   : ('glm4',    40, 131072),
-        'glm-4.6v'       : ('glm4',    40, 131072),
-        'glm4.6v'        : ('glm4',    40, 131072),
-        'glm-4.1v'       : ('glm4',    40, 131072),
-        'glm4.1v'        : ('glm4',    40, 131072),
-        'glm-4.7'        : ('glm4moe', 93, 131072),
-        'glm4.7'         : ('glm4moe', 93, 131072),
-        'glm-4.6'        : ('glm4moe', 93, 202752),
-        'glm4.6'         : ('glm4moe', 93, 202752),
-        'glm-4.5'        : ('glm4moe', 93, 131072),
-        'glm4.5'         : ('glm4moe', 93, 131072),
-        'glm-5'          : ('glm4moe', 93, 131072),
-        'glm5'           : ('glm4moe', 93, 131072),
-        'glm-4'          : ('glm4',    40, 131072),
-        'glm4'           : ('glm4',    40, 131072),
-        'glm'            : ('glm4moe', 93, 131072),
-        # ── GPT-OSS family (OpenAI) ───────────────────────────────────────────
-        # GPT-OSS reports 'gpt2' as its GGUF arch key.
-        'gpt-oss-120b'   : ('gpt2',    36, 131072),
-        'gpt-oss-20b'    : ('gpt2',    24, 131072),
-        'gpt-oss'        : ('gpt2',    36, 131072),
-        # ── Granite family (IBM) ──────────────────────────────────────────────
-        # Dense instruct models; no thinking mode.
-        'granite-4.1-30b': ('granite', 46, 131072),
-        'granite-4.1-8b' : ('granite', 32, 131072),
-        'granite-4.1-3b' : ('granite', 28, 131072),
-        'granite-4.0'    : ('granite', 32, 131072),
-        'granite'        : ('granite', 32, 131072),
-        # ── Kimi family ───────────────────────────────────────────────────────
-        'kimi-k2'        : ('kimi',    94, 131072),
-        'kimi'           : ('kimi',    94, 131072),
-        # ── Llama / Mistral family ────────────────────────────────────────────
-        'llama'          : ('llama',   32, 32768),
-        'mistral'        : ('llama',   32, 32768),
     }
 
     for key, (arch, layers, ctx) in arch_map.items():
@@ -542,17 +465,10 @@ def get_model_layers(model_path: str) -> int:
 
     layer_keys = (
         f"{arch}.block_count",
-        "llama.block_count",
         "qwen2.block_count",
         "qwen3.block_count",
         "qwen35.block_count",
-        "glm4.block_count",
-        "glm4moe.block_count",
-        "gemma3.block_count",
-        "gemma4.block_count",
-        "kimi.block_count",
-        "gpt2.block_count",
-        "granite.block_count",
+        "qwen36.block_count",
         "layers",
         "n_layers",
         "num_hidden_layers",
@@ -605,23 +521,12 @@ _SSM_TENSOR_PREFIXES = (
 )
 
 _PURE_SSM_ARCHS = {
-    "mamba", "mamba2",
-    "rwkv", "rwkv6",
-    "kimi",
     "qwen35", "qwen3_5",
     "qwen35moe", "qwen3_5moe",
 }
 
 _KNOWN_TRANSFORMER_ARCHS = {
     "qwen2", "qwen2moe", "qwen3", "qwen3moe", "qwen36",
-    "llama", "mistral",
-    "deepseek2",
-    "gemma", "gemma2", "gemma3", "gemma3n", "gemma4",
-    "glm4", "chatglm",
-    "gpt2",
-    "granite",
-    "phi", "phi3", "falcon", "starcoder2", "bloom",
-    "stablelm", "internlm2", "baichuan", "orion", "command-r",
 }
 
 
@@ -915,34 +820,7 @@ def load_models(model_folder, model, vram_size, llm_state, models_loaded_state):
                 from llama_cpp.llama_chat_format import Qwen25VLChatHandler
                 chat_handler = Qwen25VLChatHandler(clip_model_path=str(mmproj_path))
                 set_status(f"Qwen2.5-VL mode with {mmproj_path.name}", console=True)
-            elif any(k in model_lower for k in ("gemma-4", "gemma4", "gemma-3", "gemma3")):
-                try:
-                    from llama_cpp.llama_chat_format import Gemma3ChatHandler
-                    chat_handler = Gemma3ChatHandler(clip_model_path=str(mmproj_path))
-                    family = "Gemma 4" if any(k in model_lower for k in ("gemma-4","gemma4")) else "Gemma 3"
-                    set_status(f"{family} vision mode with {mmproj_path.name}", console=True)
-                except ImportError:
-                    print("[VISION] Gemma3ChatHandler not found, falling back to Llava15ChatHandler")
-                    from llama_cpp.llama_chat_format import Llava15ChatHandler
-                    chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
-                    set_status(f"Gemma vision (LLaVA fallback) with {mmproj_path.name}", console=True)
-            elif any(k in model_lower for k in ("glm-4v","glm4v","glm4.1v","glm-4.1v","glm4.6v","glm-4.6v")):
-                from llama_cpp.llama_chat_format import Llava15ChatHandler
-                chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
-                set_status(f"GLM vision mode with {mmproj_path.name}", console=True)
-            elif "apriel" in model_lower:
-                from llama_cpp.llama_chat_format import Llava15ChatHandler
-                chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
-                set_status(f"Apriel (LLaVA) mode with {mmproj_path.name}", console=True)
-            elif "minicpm" in model_lower:
-                from llama_cpp.llama_chat_format import MiniCPMv26ChatHandler
-                chat_handler = MiniCPMv26ChatHandler(clip_model_path=str(mmproj_path))
-                set_status(f"MiniCPM mode with {mmproj_path.name}", console=True)
-            elif "moondream" in model_lower:
-                from llama_cpp.llama_chat_format import MoondreamChatHandler
-                chat_handler = MoondreamChatHandler(clip_model_path=str(mmproj_path))
-                set_status(f"Moondream mode with {mmproj_path.name}", console=True)
-            elif "llava" in model_lower or "qvq" in model_lower:
+            elif "qvq" in model_lower:
                 from llama_cpp.llama_chat_format import Llava15ChatHandler
                 chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
                 set_status(f"LLaVA mode with {mmproj_path.name}", console=True)
@@ -952,19 +830,6 @@ def load_models(model_folder, model, vram_size, llm_state, models_loaded_state):
                     from llama_cpp.llama_chat_format import Qwen25VLChatHandler
                     chat_handler = Qwen25VLChatHandler(clip_model_path=str(mmproj_path))
                     set_status(f"Qwen3.5 vision (arch fallback) with {mmproj_path.name}", console=True)
-                elif arch_key in ('gemma3','gemma3n','gemma4'):
-                    try:
-                        from llama_cpp.llama_chat_format import Gemma3ChatHandler
-                        chat_handler = Gemma3ChatHandler(clip_model_path=str(mmproj_path))
-                        set_status(f"Gemma vision (arch fallback) with {mmproj_path.name}", console=True)
-                    except ImportError:
-                        from llama_cpp.llama_chat_format import Llava15ChatHandler
-                        chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
-                        set_status(f"Gemma vision (LLaVA fallback) with {mmproj_path.name}", console=True)
-                elif arch_key in ('glm4','glm4moe'):
-                    from llama_cpp.llama_chat_format import Llava15ChatHandler
-                    chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
-                    set_status(f"GLM vision (arch fallback) with {mmproj_path.name}", console=True)
                 else:
                     from llama_cpp.llama_chat_format import Llava15ChatHandler
                     chat_handler = Llava15ChatHandler(clip_model_path=str(mmproj_path))
@@ -999,8 +864,6 @@ def load_models(model_folder, model, vram_size, llm_state, models_loaded_state):
             _arch = metadata.get("general.architecture", "")
             _fallback_fmt = {
                 "qwen2":"chatml","qwen3":"chatml","qwen35":"chatml","qwen36":"chatml",
-                "llama":"llama-3","gemma3":"gemma","gemma4":"gemma",
-                "deepseek2": "chatml",
             }.get(_arch, "chatml")
             print(f"[CHAT-FMT] Template issue ({type(_e).__name__}): {_e}. "
                   f"Falling back to '{_fallback_fmt}'.")
@@ -1111,19 +974,9 @@ def calculate_single_model_gpu_layers_with_layers(
     meta     = get_model_metadata(model_path)
     arch     = meta.get("general.architecture", "unknown")
 
-    _qwen_archs    = ("qwen2","qwen2.5","qwen","qwen3","qwen36","qwen3_5","qwen35","qwen35moe","qwen3_5moe")
-    _llama_archs   = ("llama",)
-    _gemma_archs   = ("gemma3","gemma3n","gemma4")
-    _glm_archs     = ("glm4","glm4moe","chatglm")
-    _kimi_archs    = ("kimi",)
-    _gptoss_archs  = ("gpt2",)
-    _granite_archs = ("granite",)
+    _qwen_archs = ("qwen2","qwen2.5","qwen","qwen3","qwen3moe","qwen36","qwen3_5","qwen35","qwen35moe","qwen3_5moe")
 
-    if   arch in _qwen_archs:   factor = 1.15
-    elif arch in _llama_archs:  factor = 1.20
-    elif arch in _gemma_archs or arch in _glm_archs or arch in _kimi_archs: factor = 1.20
-    elif arch in _gptoss_archs or arch in _granite_archs:                   factor = 1.25
-    else:                        factor = 1.25
+    factor = 1.15 if arch in _qwen_archs else 1.25
 
     adjusted_mb = model_mb * factor
     layer_mb    = adjusted_mb / num_layers
@@ -1154,10 +1007,8 @@ def calculate_single_model_gpu_layers_with_layers(
               f"vk:{vk_res} mmproj:{mmproj_res})")
     else:
         embedding_dim = {
-            "llama":4096,"qwen2":5120,"qwen":5120,"qwen3":5120,"qwen3_5":5120,
-            "qwen35":4096,"qwen35moe":4096,"gemma3":3072,"gemma3n":1152,
-            "gemma4":3840,"glm4":4096,"glm4moe":5120,"kimi":7168,
-            "gpt2":7168,"granite":4096,
+            "qwen2":5120,"qwen":5120,"qwen3":5120,"qwen3_5":5120,
+            "qwen35":4096,"qwen35moe":4096,
         }.get(arch, 4096)
         graph_mb = 3 * (cfg.CONTEXT_SIZE / 1024) ** 2 * embedding_dim * 4 / 1024 / 1024
         reserve  = max(256, int(graph_mb * 1.2))
@@ -1267,7 +1118,6 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
         is_moe=settings.get("is_moe", False),
         is_vision=settings.get("is_vision", False),
         is_thinking_capable=settings.get("is_thinking_capable", False),
-        is_gemma4=settings.get("is_gemma4", False),
     ) + "\nRespond directly without prefixes like 'AI-Chat:'."
 
     if search_results:
@@ -1326,13 +1176,13 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
     #
     # CORE DESIGN — why we start in thinking phase immediately:
     #
-    # Testing revealed that Qwen3.6 35B-A3B and GLM 4.7 never emit an opening
-    # <think> tag.  Both models dump thinking content from token 0, only
+    # Testing revealed that Qwen3.6 35B-A3B never emits an opening
+    # <think> tag.  It dumps thinking content from token 0, only
     # closing with </think> before the final answer.  Starting in_thinking_phase
     # at True for any is_thinking_capable model handles this correctly without
     # per-model special cases.
     #
-    # Non-thinking models (Mistral, Granite, etc.) start at False.  If they
+    # Non-thinking models start at False.  If they
     # happen to emit a <think> tag (prompted, or mis-detected), the open-tag
     # detection branches below will enter thinking phase reactively.
     #
@@ -1343,7 +1193,7 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
     _think_close_tag      = "</think>"   # default; updated on explicit open-tag detection
     # Rolling tail of recent thinking content — NOT cleared between tokens.
     # Used to detect multi-token close patterns ("**Answer:**") and to recover
-    # embedded GLM answers when </think> arrives as a lone token.
+    # embedded answers when </think> arrives as a lone token.
     _think_tail           = ""
     _THINK_TAIL_LEN       = 600          # chars — enough for a full answer sentence
     # Set after an "**Answer:**" close; causes stray </think> tokens that arrive
@@ -1403,14 +1253,13 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
 
         # ── OPEN detection ────────────────────────────────────────────────────
         #
-        # For thinking-capable models in_thinking_phase is already True so these
-        # branches are skipped. They handle two remaining cases:
-        #   • A non-thinking model that was prompted into using <think> tags
-        #     (e.g. Mistral Small 3.x responding to the reasoning system prompt).
+        # For thinking-capable models in_thinking_phase is already True so this
+        # branch is skipped. It handles two remaining cases:
+        #   • A non-thinking model that was prompted into using <think> tags.
         #   • A thinking-capable model that also emits an explicit open tag —
         #     in this case we update _think_close_tag to the correct close token.
         #
-        # Pattern 1 — standard <think> tag (all Qwen family + prompted models)
+        # Standard <think> tag (all Qwen family + prompted models)
         if not in_thinking_phase and "<think>" in output_buffer:
             in_thinking_phase = True
             _think_close_tag  = "</think>"
@@ -1419,33 +1268,6 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
                 yield before
             output_buffer = output_buffer.split("<think>", 1)[1]
             yield "Thinking" if not cfg.SHOW_THINK_PHASE else "<think>"
-            continue
-
-        # Pattern 2 — <|channel|>analysis — GLM 4.x MoE / GPT-OSS Harmony
-        # Pipes on BOTH sides of 'channel'. Close token is <|end|>.
-        if not in_thinking_phase and "<|channel|>analysis" in output_buffer:
-            in_thinking_phase = True
-            _think_close_tag  = "<|end|>"
-            parts = output_buffer.split("<|channel|>analysis", 1)
-            before = re.sub(r'<\|start\|>assistant', '', parts[0])
-            if before.strip():
-                yield before
-            output_buffer = parts[1] if len(parts) > 1 else ""
-            yield "Thinking" if not cfg.SHOW_THINK_PHASE else "<|channel|>analysis"
-            continue
-
-        # Pattern 3 — <|channel>thought — Gemma 4 ONLY
-        # Pipe only BEFORE 'channel', NOT after. Close token is <channel|>.
-        # IMPORTANT: different spelling from Pattern 2 — do not conflate.
-        if not in_thinking_phase and "<|channel>thought" in output_buffer:
-            in_thinking_phase = True
-            _think_close_tag  = "<channel|>"
-            parts = output_buffer.split("<|channel>thought", 1)
-            before = parts[0].strip()
-            if before:
-                yield before
-            output_buffer = parts[1] if len(parts) > 1 else ""
-            yield "Thinking" if not cfg.SHOW_THINK_PHASE else "<|channel>thought"
             continue
 
         # ── CLOSE detection — unified dispatch ────────────────────────────────
@@ -1457,17 +1279,14 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
         # never accumulate a multi-token pattern intact.
         #
         # Close-token priority order:
-        #   1. _think_close_tag  — set when block opened (e.g. <|end|> for GPT-OSS)
-        #   2. "**Answer:**"     — GLM 4.7: embeds final answer inside think block
-        #   3. "**Final Answer:**" — alternative GLM marker
-        #   4. "</think>"        — standard close (Qwen family + GLM bare output)
-        #   5. "<channel|>"      — Gemma 4
-        #   6. "<|end|>"         — GPT-OSS / GLM MoE Harmony fallback
+        #   1. _think_close_tag  — set when block opened
+        #   2. "**Answer:**"     — embedded final answer inside think block
+        #   3. "**Final Answer:**" — alternative marker
+        #   4. "</think>"        — standard close (Qwen family)
         #
         # "**Answer:**" is placed ABOVE "</think>" so it fires first when both
-        # appear in the tail (GLM outputs: [thinking] **Answer:** text </think>).
-        # rsplit picks the LAST occurrence, skipping mid-thought markers like
-        # "**Answer Option 1:**" or "**Answer Formulation:**".
+        # appear in the tail. rsplit picks the LAST occurrence, skipping
+        # mid-thought markers like "**Answer Option 1:**".
         if in_thinking_phase:
             # Step 1 — update tail BEFORE checking so current token is included
             _think_tail = (_think_tail + token)[-_THINK_TAIL_LEN:]
@@ -1476,10 +1295,8 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
             close_token = None
             for candidate in (
                 _think_close_tag,
-                "**Answer:**", "**Final Answer:**",    # GLM embedded-answer markers
+                "**Answer:**", "**Final Answer:**",    # embedded-answer markers
                 "</think>",
-                "<channel|>",
-                "<|end|>",
             ):
                 if candidate in _think_tail:
                     close_token = candidate
@@ -1494,7 +1311,7 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
                 parts       = _think_tail.split(close_token, 1)
                 after_think = parts[1].strip() if len(parts) > 1 else ""
 
-                # ── GLM "answer after marker" pattern ─────────────────────────
+                # ── "answer after marker" pattern ─────────────────────────
                 # "**Answer:**" fired: after_think IS the answer text.
                 # Strip any trailing </think> the model appends after the answer,
                 # and set the suppress flag so stray </think> tokens are silently
@@ -1503,7 +1320,7 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
                     after_think = re.sub(r'</think>\s*$', '', after_think).strip()
                     _suppress_think_close = True
 
-                # ── GLM "answer before </think>" recovery ─────────────────────
+                # ── "answer before </think>" recovery ─────────────────────
                 # "</think>" fired but after_think is empty — the model placed its
                 # answer INSIDE the thinking block just before </think>:
                 #   [thinking]...\n**Answer:** text here</think>
@@ -1514,11 +1331,6 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
                             after_think = parts[0].rsplit(_marker, 1)[1].strip()
                             break
 
-                # Strip GPT-OSS / Harmony answer-section headers
-                after_think = re.sub(
-                    r'<\|start\|>assistant<\|channel\|>final<\|message\|>', '', after_think)
-                after_think = re.sub(
-                    r'<\|start\|>assistant<\|message\|>', '', after_think)
                 after_think = after_think.lstrip()
 
                 # Separator between thinking and response
@@ -1544,8 +1356,7 @@ def get_response_stream(session_log, settings, web_search_enabled=False, search_
 
         # ── Normal response output ────────────────────────────────────────────
         # Strip stray </think> tokens that arrive after the thinking phase was
-        # already closed via "**Answer:**".  GLM 4.7 outputs the closing tag
-        # as a separate token even after the answer text has been extracted.
+        # already closed via "**Answer:**".
         if _suppress_think_close and "</think>" in output_buffer:
             output_buffer = output_buffer.replace("</think>", "").lstrip()
             if not output_buffer:

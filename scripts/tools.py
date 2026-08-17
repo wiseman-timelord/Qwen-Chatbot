@@ -1,5 +1,5 @@
 # scripts/tools.py
-# v2: Windows 10-11 / Ubuntu 24-25 / Python 3.11-3.12 / Gradio 5.x
+# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x
 """
 Centralized tools module for web search and TTS.
 
@@ -9,7 +9,7 @@ Search Tools:
 TTS Tools:
 - Text-to-Speech using Kokoro TTS (kokoro>=0.9.4) on all supported platforms
 - G2P via misaki[en] — no espeak dependency on any platform
-- Audio playback via winsound (Windows) or PipeWire/PulseAudio/ALSA (Linux)
+- Audio playback via winsound
 """
 
 import os
@@ -561,40 +561,8 @@ def detect_tts_engine() -> str:
 
 
 def detect_audio_backend() -> str:
-    """Detect audio playback backend.
-
-    Returns: "windows" | "pipewire" | "pulseaudio" | "alsa" | "none"
-    """
-    if cfg.PLATFORM == "windows":
-        return "windows"
-
-    # PipeWire — must be actually running, not just installed
-    try:
-        result = subprocess.run(["pw-cli", "info", "0"], capture_output=True, timeout=3)
-        if result.returncode == 0:
-            return "pipewire"
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
-
-    # PulseAudio (or PipeWire-Pulse compatibility layer)
-    try:
-        result = subprocess.run(["pactl", "info"], capture_output=True, timeout=3)
-        if result.returncode == 0:
-            if "PipeWire" in result.stdout.decode():
-                return "pipewire"
-            return "pulseaudio"
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
-
-    # ALSA
-    try:
-        result = subprocess.run(["aplay", "--version"], capture_output=True, timeout=3)
-        if result.returncode == 0:
-            return "alsa"
-    except (subprocess.SubprocessError, FileNotFoundError):
-        pass
-
-    return "none"
+    """Detect audio playback backend. Returns "windows"."""
+    return "windows"
 
 
 def _get_kokoro_voices() -> List[Dict[str, str]]:
@@ -876,79 +844,20 @@ def synthesize_last_response(session_messages: list) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _play_audio_file(file_path: str, output_device: Optional[str] = None):
-    """Play an audio file using the best available backend."""
-    if cfg.PLATFORM == "windows":
-        try:
-            import winsound
-            winsound.PlaySound(file_path, winsound.SND_FILENAME)
-            return
-        except Exception:
-            pass
-        try:
-            from playsound import playsound
-            playsound(file_path)
-            return
-        except Exception:
-            pass
-        print("[TTS] No Windows audio playback available")
+    """Play an audio file using Windows audio."""
+    try:
+        import winsound
+        winsound.PlaySound(file_path, winsound.SND_FILENAME)
         return
-
-    # Linux — build environment for user audio session access
-    env = os.environ.copy()
-    original_uid = os.getuid() if hasattr(os, "getuid") else None
-    sudo_user = os.environ.get("SUDO_USER")
-
-    if original_uid == 0 and sudo_user:
-        try:
-            import pwd
-            user_info = pwd.getpwnam(sudo_user)
-            user_uid  = user_info.pw_uid
-            user_home = user_info.pw_dir
-            env["HOME"] = user_home
-            env["USER"] = sudo_user
-            runtime_dir = f"/run/user/{user_uid}"
-            if Path(runtime_dir).exists():
-                env["XDG_RUNTIME_DIR"] = runtime_dir
-                pulse_path = f"{runtime_dir}/pulse"
-                if Path(pulse_path).exists():
-                    env["PULSE_RUNTIME_PATH"] = pulse_path
-                pipewire_path = f"{runtime_dir}/pipewire-0"
-                if Path(pipewire_path).exists():
-                    env["PIPEWIRE_RUNTIME_DIR"] = runtime_dir
-        except Exception as e:
-            print(f"[TTS] Could not set up user audio env: {e}")
-
-    played = False
-
-    if not played:
-        try:
-            subprocess.run(["pw-play", file_path], timeout=120, check=True,
-                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            played = True
-            print("[TTS] Playback via PipeWire")
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-
-    if not played:
-        try:
-            subprocess.run(["paplay", file_path], timeout=120, check=True,
-                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            played = True
-            print("[TTS] Playback via PulseAudio")
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-
-    if not played:
-        try:
-            subprocess.run(["aplay", "-q", file_path], timeout=120, check=True,
-                           env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            played = True
-            print("[TTS] Playback via ALSA")
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            pass
-
-    if not played:
-        print("[TTS] ERROR: All audio backends failed")
+    except Exception:
+        pass
+    try:
+        from playsound import playsound
+        playsound(file_path)
+        return
+    except Exception:
+        pass
+    print("[TTS] No Windows audio playback available")
 
 
 def play_tts_audio(wav_path: str, output_device: Optional[str] = None):

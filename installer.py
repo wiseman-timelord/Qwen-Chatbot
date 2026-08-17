@@ -1,6 +1,6 @@
-# Script: installer.py - Installation script for Chat-Gradio-Gguf
-# v2: Targets Windows 10-11 / Ubuntu 24-25 / Python 3.11-3.12 / Gradio 5.x / PyQt6
-# Note: Uses sentence-transformers for embeddings (cross-platform, offline)
+# Script: installer.py - Installation script for Qwen-Windows-Gguf
+# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
+# Note: Uses sentence-transformers for embeddings (offline)
 # Note: Uses PyQt6 WebEngine for custom browser window
 
 import os
@@ -17,7 +17,7 @@ import re
 
 # Constants / Variables
 _PY_TAG = f"cp{sys.version_info.major}{sys.version_info.minor}"
-APP_NAME = "Chat-Gradio-Gguf"
+APP_NAME = "Qwen-Windows-Gguf"
 BASE_DIR = Path(__file__).parent
 VENV_DIR = BASE_DIR / ".venv"
 LLAMACPP_GIT_REPO = "https://github.com/ggml-org/llama.cpp.git"
@@ -41,7 +41,6 @@ LLAMACPP_PYTHON_COMPILE_DISPLAY = "v0.3.26"
 _INSTALLED_LLAMA_WHEEL_VERSION = None
 LLAMACPP_TARGET_VERSION = "b9542"
 WIN_COMPILE_TEMP = Path("C:/temp_build")
-LINUX_COMPILE_TEMP = None
 _INSTALL_PROCESSES = set()
 _DID_COMPILATION = False
 _PRE_EXISTING_PROCESSES = {}
@@ -103,17 +102,6 @@ KOKORO_VOICE_PACKS = {
     },
 }
 
-PLATFORM = None
-
-def set_platform() -> None:
-    global PLATFORM
-    if len(sys.argv) < 2 or sys.argv[1].lower() not in ["windows", "linux"]:
-        print("ERROR: Platform argument required (windows/linux)")
-        sys.exit(1)
-    PLATFORM = sys.argv[1].lower()
-
-set_platform()
-
 # Functions
 def print_status(message: str, success: bool = True) -> None:
     status = "[✓]" if success else "[✗]"
@@ -141,55 +129,35 @@ def detect_cpu_features() -> dict:
 
     success = False
 
-    if PLATFORM == "windows":
-        try:
-            import ctypes
-            _ipfp = ctypes.windll.kernel32.IsProcessorFeaturePresent
-            _ipfp.restype = ctypes.c_bool
-            _ipfp.argtypes = [ctypes.c_uint]
-            features["SSE3"]   = bool(_ipfp(13))
-            features["SSSE3"]  = bool(_ipfp(36))
-            features["SSE4_1"] = bool(_ipfp(37))
-            features["SSE4_2"] = bool(_ipfp(38))
-            features["AVX"]    = bool(_ipfp(39))
-            features["AVX2"]   = bool(_ipfp(40))
-            features["AVX512"] = bool(_ipfp(41))
-            success = True
-        except Exception:
-            features["SSE3"] = True
-            success = True
+    try:
+        import ctypes
+        _ipfp = ctypes.windll.kernel32.IsProcessorFeaturePresent
+        _ipfp.restype = ctypes.c_bool
+        _ipfp.argtypes = [ctypes.c_uint]
+        features["SSE3"]   = bool(_ipfp(13))
+        features["SSSE3"]  = bool(_ipfp(36))
+        features["SSE4_1"] = bool(_ipfp(37))
+        features["SSE4_2"] = bool(_ipfp(38))
+        features["AVX"]    = bool(_ipfp(39))
+        features["AVX2"]   = bool(_ipfp(40))
+        features["AVX512"] = bool(_ipfp(41))
+        success = True
+    except Exception:
+        features["SSE3"] = True
+        success = True
 
-        if success:
-            try:
-                import cpuinfo as _cpuinfo
-                _info  = _cpuinfo.get_cpu_info()
-                _flags = [f.lower() for f in _info.get('flags', [])]
-                features["FMA"]    = 'fma'  in _flags
-                features["F16C"]   = 'f16c' in _flags
-                features["AVX"]    = features["AVX"]    or ('avx'    in _flags)
-                features["AVX2"]   = features["AVX2"]   or ('avx2'   in _flags)
-                features["AVX512"] = features["AVX512"] or any('avx512' in f for f in _flags)
-            except ImportError:
-                pass
-
-    else:  # Linux
+    if success:
         try:
-            with open('/proc/cpuinfo', 'r') as f:
-                content = f.read().lower()
-            features["AVX"]    = 'avx'    in content
-            features["AVX2"]   = 'avx2'   in content
-            features["AVX512"] = 'avx512' in content
-            features["FMA"]    = 'fma'    in content
-            features["F16C"]   = 'f16c'   in content
-            features["SSE3"]   = 'sse3'   in content or 'pni' in content
-            features["SSSE3"]  = 'ssse3'  in content
-            features["SSE4_1"] = 'sse4_1' in content
-            features["SSE4_2"] = 'sse4_2' in content
-            success = True
-        except Exception:
-            features["SSE3"] = True
-            print_status("Linux CPU detection fallback - SSE3 only")
-            success = True
+            import cpuinfo as _cpuinfo
+            _info  = _cpuinfo.get_cpu_info()
+            _flags = [f.lower() for f in _info.get('flags', [])]
+            features["FMA"]    = 'fma'  in _flags
+            features["F16C"]   = 'f16c' in _flags
+            features["AVX"]    = features["AVX"]    or ('avx'    in _flags)
+            features["AVX2"]   = features["AVX2"]   or ('avx2'   in _flags)
+            features["AVX512"] = features["AVX512"] or any('avx512' in f for f in _flags)
+        except ImportError:
+            pass
 
     if success:
         _CPU_FEATURES = features
@@ -206,12 +174,6 @@ def detect_browser_acceleration() -> tuple:
     global DX11_CAPABLE, DX_FEATURE_LEVEL, DX_FEATURE_NAME
 
     if DX11_CAPABLE is not None:
-        return (DX11_CAPABLE, DX_FEATURE_LEVEL)
-
-    if PLATFORM != "windows":
-        DX11_CAPABLE = True
-        DX_FEATURE_LEVEL = 0xb000
-        DX_FEATURE_NAME = "11.0"
         return (DX11_CAPABLE, DX_FEATURE_LEVEL)
 
     try:
@@ -252,69 +214,36 @@ def run_initial_detection():
     print()
 
 
-# Set TEMP_DIR based on platform
-if PLATFORM == "windows":
-    TEMP_DIR = WIN_COMPILE_TEMP
-else:
-    TEMP_DIR = BASE_DIR / "data" / "temp"
+TEMP_DIR = WIN_COMPILE_TEMP
 
 # Backend definitions
-if PLATFORM == "windows":
-    BACKEND_OPTIONS = {
-        "Download CPU Binary / Default CPU Wheel": {
-            "url": None, "dest": None, "cli_path": None,
-            "needs_python_bindings": True, "compile_binary": False,
-            "compile_wheel": False, "vulkan_required": False, "build_flags": {}
-        },
-        "Download Vulkan Binary / Default CPU Wheel": {
-            "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMACPP_TARGET_VERSION}/llama-{LLAMACPP_TARGET_VERSION}-bin-win-vulkan-x64.zip",
-            "dest": "data/llama-vulkan-bin",
-            "cli_path": "data/llama-vulkan-bin/llama-cli.exe",
-            "needs_python_bindings": True, "compile_binary": False,
-            "compile_wheel": False, "vulkan_required": False, "build_flags": {}
-        },
-        "Compile CPU Binaries / Compile CPU Wheel": {
-            "url": None, "dest": "data/llama-cpu-bin",
-            "cli_path": "data/llama-cpu-bin/llama-cli.exe",
-            "needs_python_bindings": True, "compile_binary": True,
-            "compile_wheel": True, "vulkan_required": False, "build_flags": {}
-        },
-        "Compile Vulkan Binaries / Compile Vulkan Wheel": {
-            "url": None, "dest": "data/llama-vulkan-bin",
-            "cli_path": "data/llama-vulkan-bin/llama-cli.exe",
-            "needs_python_bindings": True, "compile_binary": True,
-            "compile_wheel": True, "vulkan_required": True,
-            "build_flags": {"GGML_VULKAN": "1"}
-        }
+BACKEND_OPTIONS = {
+    "Download CPU Binary / Default CPU Wheel": {
+        "url": None, "dest": None, "cli_path": None,
+        "needs_python_bindings": True, "compile_binary": False,
+        "compile_wheel": False, "vulkan_required": False, "build_flags": {}
+    },
+    "Download Vulkan Binary / Default CPU Wheel": {
+        "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMACPP_TARGET_VERSION}/llama-{LLAMACPP_TARGET_VERSION}-bin-win-vulkan-x64.zip",
+        "dest": "data/llama-vulkan-bin",
+        "cli_path": "data/llama-vulkan-bin/llama-cli.exe",
+        "needs_python_bindings": True, "compile_binary": False,
+        "compile_wheel": False, "vulkan_required": False, "build_flags": {}
+    },
+    "Compile CPU Binaries / Compile CPU Wheel": {
+        "url": None, "dest": "data/llama-cpu-bin",
+        "cli_path": "data/llama-cpu-bin/llama-cli.exe",
+        "needs_python_bindings": True, "compile_binary": True,
+        "compile_wheel": True, "vulkan_required": False, "build_flags": {}
+    },
+    "Compile Vulkan Binaries / Compile Vulkan Wheel": {
+        "url": None, "dest": "data/llama-vulkan-bin",
+        "cli_path": "data/llama-vulkan-bin/llama-cli.exe",
+        "needs_python_bindings": True, "compile_binary": True,
+        "compile_wheel": True, "vulkan_required": True,
+        "build_flags": {"GGML_VULKAN": "1"}
     }
-else:  # Linux
-    BACKEND_OPTIONS = {
-        "Download CPU Binary / Default CPU Wheel": {
-            "url": None, "dest": None, "cli_path": None,
-            "needs_python_bindings": True, "compile_binary": False,
-            "compile_wheel": False, "vulkan_required": False, "build_flags": {}
-        },
-        "Download Vulkan Binary / Default CPU Wheel": {
-            "url": f"https://github.com/ggml-org/llama.cpp/releases/download/{LLAMACPP_TARGET_VERSION}/llama-{LLAMACPP_TARGET_VERSION}-bin-ubuntu-vulkan-x64.tar.gz",
-            "dest": "data/llama-vulkan-bin",
-            "cli_path": "data/llama-vulkan-bin/llama-cli",
-            "needs_python_bindings": True, "compile_binary": False,
-            "compile_wheel": False, "vulkan_required": False, "build_flags": {}
-        },
-        "Compile CPU Binaries / Compile CPU Wheel": {
-            "url": None, "dest": "data/llama-cpu-bin",
-            "cli_path": "data/llama-cpu-bin/llama-cli",
-            "needs_python_bindings": True, "compile_binary": True,
-            "compile_wheel": True, "vulkan_required": False, "build_flags": {}
-        },
-        "Compile Vulkan Binaries / Compile Vulkan Wheel": {
-            "url": None, "dest": "data/llama-vulkan-bin",
-            "cli_path": "data/llama-vulkan-bin/llama-cli",
-            "needs_python_bindings": True, "compile_binary": True,
-            "compile_wheel": True, "vulkan_required": True,
-            "build_flags": {"GGML_VULKAN": "1"}
-        }
-    }
+}
 
 # =============================================================================
 # v2 BASE REQUIREMENTS
@@ -338,17 +267,13 @@ BASE_REQ = [
     "lxml_html_clean>=0.3.0",    # explicit pin AFTER newspaper4k to avoid lxml 6.x pull
     "soundfile>=0.12.1",
     "kokoro>=0.9.4",
+    "pywin32>=306",
+    "tk==0.1.0",
+    "pythonnet==3.0.5",
 ]
 
-if PLATFORM == "windows":
-    BASE_REQ.extend([
-        "pywin32>=306",
-        "tk==0.1.0",
-        "pythonnet==3.0.5",
-    ])
-
 def clear_screen():
-    os.system('cls' if PLATFORM == "windows" else 'clear')
+    os.system('cls')
 
 def backend_requires_compilation(backend: str) -> bool:
     """Check if the selected backend requires compilation"""
@@ -361,9 +286,6 @@ def detect_windows_version() -> str:
     global WINDOWS_VERSION
     if WINDOWS_VERSION is not None:
         return WINDOWS_VERSION
-
-    if PLATFORM != "windows":
-        return None
 
     try:
         import platform
@@ -382,32 +304,6 @@ def detect_windows_version() -> str:
         return "unknown"
 
 
-def detect_linux_version() -> str:
-    """Detect Ubuntu version and cache in global OS_VERSION."""
-    global OS_VERSION
-    if OS_VERSION is not None:
-        return OS_VERSION
-
-    try:
-        with open("/etc/os-release") as f:
-            content = f.read()
-
-        if "ubuntu" not in content.lower():
-            OS_VERSION = "unknown"
-            return "unknown"
-
-        version_match = re.search(r'VERSION_ID="?([0-9\.]+)"?', content)
-        if version_match:
-            OS_VERSION = version_match.group(1)
-            return OS_VERSION
-
-        OS_VERSION = "unknown"
-        return "unknown"
-    except Exception as e:
-        print_status(f"OS detection failed: {e}", False)
-        OS_VERSION = "unknown"
-        return "unknown"
-
 def get_dynamic_requirements() -> list:
     requirements = BASE_REQ.copy()
     requirements.append("gradio>=5.0.0,<6.0.0")
@@ -419,70 +315,35 @@ def get_torch_version_for_python() -> str:
 
 def check_version_compatibility():
     """Check Python and OS compatibility."""
-    global WINDOWS_VERSION, PYTHON_VERSION, PLATFORM
+    global WINDOWS_VERSION, PYTHON_VERSION
 
     if sys.version_info < (3, 11):
-        print_status("Python ≥3.11 required for Chat-Gradio-Gguf v2", False)
+        print_status("Python 3.12 required for Qwen-Windows-Gguf", False)
         return False
 
     if sys.version_info >= (3, 13):
         print_status(
             f"Python {sys.version_info.major}.{sys.version_info.minor} is not supported. "
-            "Kokoro TTS requires Python <3.13. Please use Python 3.11 or 3.12.", False
+            "Kokoro TTS requires Python <3.13. Please use Python 3.12.", False
         )
         return False
 
     PYTHON_VERSION = sys.version_info
 
-    if PLATFORM == "windows":
-        win_ver = detect_windows_version()
-        if win_ver in ("unsupported", "7", "8", "8.1"):
-            print_status(
-                f"Windows {win_ver} is not supported in v2. Requires Windows 10 or 11.", False
-            )
-            return False
-        return True
-
-    else:  # Linux
-        try:
-            with open("/etc/os-release") as f:
-                content = f.read()
-            if "UBUNTU_VERSION_ID" in content or "ubuntu" in content.lower():
-                version_match = re.search(r'VERSION_ID="?([0-9\.]+)"?', content)
-                if version_match:
-                    ubuntu_version = version_match.group(1)
-                    major = int(ubuntu_version.split('.')[0])
-                    if major >= 24:
-                        return True
-                    print_status(
-                        f"Ubuntu {ubuntu_version} is not supported in v2. Requires Ubuntu 24 or 25.", False
-                    )
-                    return False
-            print_status("Could not determine Ubuntu version", False)
-            return False
-        except Exception as e:
-            print_status(f"OS detection failed: {e}", False)
-            return False
+    win_ver = detect_windows_version()
+    if win_ver in ("unsupported", "7", "8", "8.1"):
+        print_status(
+            f"Windows {win_ver} is not supported. Requires Windows 10.", False
+        )
+        return False
+    return True
 
 
 def is_kokoro_compatible() -> bool:
     """Check if current OS/Python supports Kokoro TTS."""
     if sys.version_info >= (3, 13):
         return False
-
-    if PLATFORM == "windows":
-        return WINDOWS_VERSION in ["10", "11"]
-
-    elif PLATFORM == "linux":
-        try:
-            if OS_VERSION:
-                major_version = int(OS_VERSION.split('.')[0])
-                return major_version >= 24
-        except (ValueError, AttributeError, IndexError):
-            pass
-        return False
-
-    return False
+    return WINDOWS_VERSION in ["10", "11"]
 
 
 # =============================================================================
@@ -491,8 +352,6 @@ def is_kokoro_compatible() -> bool:
 
 def snapshot_pre_existing_processes() -> None:
     global _PRE_EXISTING_PROCESSES
-    if PLATFORM != "windows":
-        return
     try:
         import psutil
     except ImportError:
@@ -518,8 +377,6 @@ def track_process(pid: int) -> None:
 
 
 def cleanup_build_processes() -> None:
-    if PLATFORM != "windows":
-        return
     try:
         import psutil
     except ImportError:
@@ -651,7 +508,7 @@ def detect_build_tools_available() -> dict:
     # Priority 1: already on PATH
     if shutil.which("cmake"):
         tools["CMake"] = True
-    elif PLATFORM == "windows":
+    else:
         # Priority 2: bundled inside VS / Build Tools 2019-2022
         cmake_bin = _find_cmake_in_vs_installations()
         if cmake_bin:
@@ -659,24 +516,23 @@ def detect_build_tools_available() -> dict:
             # Prepend to PATH so cmake is usable by any subsequent subprocess
             os.environ["PATH"] = cmake_bin + os.pathsep + os.environ.get("PATH", "")
 
-    # MSVC / MSBuild (Windows only) ----------------------------------------
-    if PLATFORM == "windows":
-        try:
-            vswhere = (Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
-                       / "Microsoft Visual Studio" / "Installer" / "vswhere.exe")
-            if vswhere.exists():
-                result = subprocess.run(
-                    [str(vswhere), "-latest", "-property", "installationPath"],
-                    capture_output=True, text=True, timeout=10,
-                )
-                if result.returncode == 0 and result.stdout.strip():
-                    tools["MSVC"] = True
-                    msbuild_path = (Path(result.stdout.strip())
-                                   / "MSBuild" / "Current" / "Bin" / "MSBuild.exe")
-                    if msbuild_path.exists():
-                        tools["MSBuild"] = True
-        except Exception:
-            pass
+    # MSVC / MSBuild ---------------------------------------------------------
+    try:
+        vswhere = (Path(os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)"))
+                   / "Microsoft Visual Studio" / "Installer" / "vswhere.exe")
+        if vswhere.exists():
+            result = subprocess.run(
+                [str(vswhere), "-latest", "-property", "installationPath"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                tools["MSVC"] = True
+                msbuild_path = (Path(result.stdout.strip())
+                               / "MSBuild" / "Current" / "Bin" / "MSBuild.exe")
+                if msbuild_path.exists():
+                    tools["MSBuild"] = True
+    except Exception:
+        pass
 
     return tools
 
@@ -721,7 +577,7 @@ def print_header(section: str = "Initialization") -> None:
     clear_screen()
     width = shutil.get_terminal_size().columns - 1
     print("=" * width)
-    print(f"    Chat-Gradio-Gguf v2 — {section}")
+    print(f"    Qwen-Windows-Gguf — {section}")
     print("=" * width)
     print()
 
@@ -736,11 +592,8 @@ def create_files_and_directories(backend: str) -> None:
         dir_path.mkdir(parents=True, exist_ok=True)
 
     # TEMP_DIR cannot go in DIRECTORIES above: those are all relative to
-    # BASE_DIR, and on Windows TEMP_DIR is C:/temp_build (WIN_COMPILE_TEMP,
-    # kept short so build paths do not blow the path length limit). Nothing
-    # created it, which is why the first step to write a temp script there
-    # failed with "No such file or directory". On Linux TEMP_DIR is
-    # data/temp and already in the list, so this is a no-op there.
+    # BASE_DIR, and TEMP_DIR is C:/temp_build (WIN_COMPILE_TEMP, kept short
+    # so build paths do not blow the path length limit).
     TEMP_DIR.mkdir(parents=True, exist_ok=True)
     print_status(f"Directories created/verified (temp: {TEMP_DIR})")
 
@@ -751,10 +604,8 @@ def create_files_and_directories(backend: str) -> None:
 
 def install_embedding_backend() -> bool:
     """Install PyTorch CPU and sentence-transformers."""
-    python_exe = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                    ("python.exe" if PLATFORM == "windows" else "python"))
-    pip_exe    = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                    ("pip.exe"    if PLATFORM == "windows" else "pip"))
+    python_exe = str(VENV_DIR / "Scripts" / "python.exe")
+    pip_exe    = str(VENV_DIR / "Scripts" / "pip.exe")
 
     torch_req                   = "torch>=2.5.0"
     transformers_version        = "transformers>=4.44.0"
@@ -834,8 +685,7 @@ except Exception as e:
 def install_qt_webengine() -> bool:
     """Install PyQt6 + PyQt6-WebEngine for the custom browser window."""
     print_status("Installing Qt6 WebEngine for custom browser...")
-    pip_exe = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                 ("pip.exe" if PLATFORM == "windows" else "pip"))
+    pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
 
     try:
         if not pip_install_with_retry(pip_exe, "PyQt6>=6.6.0", max_retries=3, initial_delay=5.0):
@@ -855,59 +705,6 @@ def install_qt_webengine() -> bool:
 
 
 # =============================================================================
-# LINUX SYSTEM DEPENDENCIES
-# =============================================================================
-
-def install_linux_system_dependencies(backend: str) -> bool:
-    """Install Linux system dependencies."""
-    print_status("Installing Linux system dependencies...")
-
-    base_packages = [
-        "python3-dev", "build-essential", "libffi-dev", "libssl-dev",
-        "libegl1", "libgl1", "libxkbcommon0", "libxkbcommon-x11-0",
-        "libxcb-cursor0", "libxcb-icccm4", "libxcb-image0", "libxcb-keysyms1",
-        "libxcb-randr0", "libxcb-render-util0", "libxcb-shape0",
-        "libxcb-xinerama0", "libxcb-xkb1", "libxcb1",
-    ]
-
-    info = BACKEND_OPTIONS[backend]
-    vulkan_packages = []
-    if info.get("build_flags", {}).get("GGML_VULKAN"):
-        vulkan_packages = [
-            "vulkan-tools", "libvulkan-dev", "mesa-utils",
-            "glslang-tools", "spirv-tools"
-        ]
-    elif "Vulkan" in backend:
-        vulkan_packages = ["vulkan-tools", "libvulkan1"]
-
-    try:
-        subprocess.run(["sudo", "apt-get", "update"], check=True)
-        subprocess.run(
-            ["sudo", "apt-get", "install", "-y"] + list(set(base_packages)), check=True
-        )
-        print_status("Base dependencies installed")
-
-        if vulkan_packages:
-            print_status("Installing Vulkan dependencies...")
-            for package in vulkan_packages:
-                try:
-                    subprocess.run(
-                        ["sudo", "apt-get", "install", "-y", package],
-                        capture_output=True, check=True
-                    )
-                    print_status(f"  Installed {package}")
-                except subprocess.CalledProcessError:
-                    print_status(f"  Optional package {package} failed (continuing)", False)
-
-        print_status("Linux system dependencies installed")
-        return True
-
-    except subprocess.CalledProcessError as e:
-        print_status(f"System dependency installation failed: {e}", False)
-        return False
-
-
-# =============================================================================
 # PYTHON DEPENDENCY INSTALLATION
 # =============================================================================
 
@@ -916,8 +713,7 @@ def install_python_deps(backend: str) -> bool:
     global _INSTALLED_LLAMA_WHEEL_VERSION
     print_status("Installing Python dependencies...")
     try:
-        pip_exe = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                    ("pip.exe" if PLATFORM == "windows" else "pip"))
+        pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
 
         all_requirements = get_dynamic_requirements()
 
@@ -948,7 +744,7 @@ def install_python_deps(backend: str) -> bool:
             sources = _get_prebuilt_wheel_urls()
 
             if not sources:
-                print_status("No pre-built wheel sources available for this platform.", False)
+                print_status("No pre-built wheel sources available.", False)
                 return False
 
             print_status(f"Installing llama-cpp-python {wheel_version} (CPU, trying {len(sources)} sources)...")
@@ -992,7 +788,7 @@ def install_python_deps(backend: str) -> bool:
                     print_status("Error: Vulkan SDK not found", False)
                     return False
 
-            if PLATFORM == "windows" and not check_vcredist_windows():
+            if not check_vcredist_windows():
                 print_status("Warning: Visual C++ Redistributable (x64) not detected", False)
                 time.sleep(3)
 
@@ -1018,8 +814,7 @@ def install_optional_file_support() -> bool:
          "python-pptx>=1.0.0",
     ]
 
-    pip_exe = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                 ("pip.exe" if PLATFORM == "windows" else "pip"))
+    pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
 
     for package in optional_packages:
         try:
@@ -1036,7 +831,7 @@ def install_optional_file_support() -> bool:
 # SYSTEM INI CREATION
 # =============================================================================
 
-def create_system_ini(platform, os_version, python_version,
+def create_system_ini(os_version, python_version,
                       backend_type, embedding_model,
                       windows_version=None, vulkan_available=False,
                       llama_cli_path=None, llama_bin_path=None,
@@ -1049,7 +844,7 @@ def create_system_ini(platform, os_version, python_version,
     try:
         with open(system_ini_path, "w", encoding='utf-8') as f:
             f.write("[system]\n")
-            f.write(f"platform = {platform}\n")
+            f.write(f"platform = windows\n")
             f.write(f"os_version = {os_version}\n")
             f.write(f"python_version = {python_version}\n")
             f.write(f"backend_type = {backend_type}\n")
@@ -1064,7 +859,7 @@ def create_system_ini(platform, os_version, python_version,
                 f.write(f"llama_cli_path = {llama_cli_path}\n")
             if llama_bin_path:
                 f.write(f"llama_bin_path = {llama_bin_path}\n")
-            if platform == "windows" and windows_version:
+            if windows_version:
                 f.write(f"windows_version = {windows_version}\n")
 
             f.write("\n[tts]\n")
@@ -1121,10 +916,8 @@ def create_venv() -> bool:
 
         print_status("Created new virtual environment")
 
-        python_exe = VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") / \
-                     ("python.exe" if PLATFORM == "windows" else "python")
-        pip_exe    = VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") / \
-                     ("pip.exe"    if PLATFORM == "windows" else "pip")
+        python_exe = VENV_DIR / "Scripts" / "python.exe"
+        pip_exe    = VENV_DIR / "Scripts" / "pip.exe"
 
         if not python_exe.exists():
             raise FileNotFoundError(f"Python executable not found at {python_exe}")
@@ -1187,80 +980,58 @@ def check_vcredist_windows() -> bool:
 
 
 def check_vulkan_sdk_installed() -> bool:
-    if PLATFORM == "windows":
-        vulkan_sdk = os.environ.get("VULKAN_SDK")
-        if vulkan_sdk and Path(vulkan_sdk).is_dir():
-            return True
-        default_sdk = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "VulkanSDK"
-        if default_sdk.exists():
-            for child in default_sdk.iterdir():
-                if child.is_dir() and (child / "Bin" / "vulkaninfoSDK.exe").exists():
-                    os.environ["VULKAN_SDK"] = str(child)
-                    return True
-        return False
-    else:
-        try:
-            result = subprocess.run(["vulkaninfo", "--summary"],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            if result.returncode != 0:
-                return False
-            result = subprocess.run(["which", "glslc"], capture_output=True)
-            return result.returncode == 0
-        except:
-            return False
+    vulkan_sdk = os.environ.get("VULKAN_SDK")
+    if vulkan_sdk and Path(vulkan_sdk).is_dir():
+        return True
+    default_sdk = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files")) / "VulkanSDK"
+    if default_sdk.exists():
+        for child in default_sdk.iterdir():
+            if child.is_dir() and (child / "Bin" / "vulkaninfoSDK.exe").exists():
+                os.environ["VULKAN_SDK"] = str(child)
+                return True
+    return False
 
 
 def is_vulkan_installed() -> bool:
     """Check if Vulkan runtime is installed on the system."""
-    if PLATFORM == "windows":
+    try:
+        import winreg
+        key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                             r"SOFTWARE\Khronos\Vulkan\Drivers")
+        _, num_values, _ = winreg.QueryInfoKey(key)
+        winreg.CloseKey(key)
+        if num_values > 0:
+            return True
+    except Exception:
+        pass
+
+    if shutil.which("vulkaninfo"):
         try:
-            import winreg
-            key = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
-                                 r"SOFTWARE\Khronos\Vulkan\Drivers")
-            _, num_values, _ = winreg.QueryInfoKey(key)
-            winreg.CloseKey(key)
-            if num_values > 0:
+            result = subprocess.run(
+                ["vulkaninfo", "--summary"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=8
+            )
+            if result.returncode == 0:
                 return True
         except Exception:
             pass
 
-        if shutil.which("vulkaninfo"):
-            try:
-                result = subprocess.run(
-                    ["vulkaninfo", "--summary"],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    timeout=8
-                )
-                if result.returncode == 0:
-                    return True
-            except Exception:
-                pass
+    vulkan_sdk_env = os.environ.get("VULKAN_SDK", "")
+    if vulkan_sdk_env and Path(vulkan_sdk_env).is_dir():
+        return True
 
-        vulkan_sdk_env = os.environ.get("VULKAN_SDK", "")
-        if vulkan_sdk_env and Path(vulkan_sdk_env).is_dir():
+    pf = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
+    for folder_name in ("VulkanRT", "VulkanSDK"):
+        folder = pf / folder_name
+        if folder.exists() and any(folder.iterdir()):
             return True
 
-        pf = Path(os.environ.get("PROGRAMFILES", r"C:\Program Files"))
-        for folder_name in ("VulkanRT", "VulkanSDK"):
-            folder = pf / folder_name
-            if folder.exists() and any(folder.iterdir()):
-                return True
+    sys32 = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32"
+    if (sys32 / "vulkan-1.dll").exists():
+        return True
 
-        sys32 = Path(os.environ.get("SYSTEMROOT", r"C:\Windows")) / "System32"
-        if (sys32 / "vulkan-1.dll").exists():
-            return True
-
-        return False
-
-    else:
-        try:
-            result1 = subprocess.run(["vulkaninfo", "--summary"],
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            result2 = subprocess.run(["ldconfig", "-p"],
-                                     stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            return result1.returncode == 0 or b"libvulkan" in result2.stdout
-        except FileNotFoundError:
-            return False
+    return False
 
 
 def pip_install_with_retry(pip_exe: str, package: str, extra_args: list = None,
@@ -1364,20 +1135,12 @@ def _get_prebuilt_wheel_urls() -> list:
     py_tag = _PY_TAG
     sources = []
 
-    if PLATFORM == "windows":
-        filename = f"llama_cpp_python-{wheel_version}-{py_tag}-{py_tag}-win_amd64.whl"
-        sources.append({
-            "type": "url",
-            "label": f"eswarthammana/llama-cpp-wheels {wheel_version}",
-            "value": f"https://github.com/eswarthammana/llama-cpp-wheels/releases/download/{LLAMACPP_PYTHON_PREBUILT_VERSION}/{filename}"
-        })
-    else:
-        filename = f"llama_cpp_python-{wheel_version}-{py_tag}-{py_tag}-manylinux_2_31_x86_64.manylinux_2_17_x86_64.whl"
-        sources.append({
-            "type": "url",
-            "label": f"eswarthammana/llama-cpp-wheels {wheel_version}",
-            "value": f"https://github.com/eswarthammana/llama-cpp-wheels/releases/download/{LLAMACPP_PYTHON_PREBUILT_VERSION}/{filename}"
-        })
+    filename = f"llama_cpp_python-{wheel_version}-{py_tag}-{py_tag}-win_amd64.whl"
+    sources.append({
+        "type": "url",
+        "label": f"eswarthammana/llama-cpp-wheels {wheel_version}",
+        "value": f"https://github.com/eswarthammana/llama-cpp-wheels/releases/download/{LLAMACPP_PYTHON_PREBUILT_VERSION}/{filename}"
+    })
 
     sources.append({
         "type": "pypi",
@@ -1446,14 +1209,13 @@ def build_llama_cpp_python_with_flags(build_flags: dict) -> bool:
 
     # Ensure cmake is reachable — detection may have found it inside VS Build
     # Tools but not yet injected it into PATH (e.g. if build is called directly).
-    if PLATFORM == "windows" and not shutil.which("cmake"):
+    if not shutil.which("cmake"):
         cmake_bin = _find_cmake_in_vs_installations()
         if cmake_bin:
             os.environ["PATH"] = cmake_bin + os.pathsep + os.environ.get("PATH", "")
             print_status(f"CMake located at: {cmake_bin}")
-    
-    pip_exe = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                 ("pip.exe" if PLATFORM == "windows" else "pip"))
+
+    pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
     
     # Resolve version — always a real PyPI-compatible version string
     if LLAMACPP_PYTHON_VERSION is None:
@@ -1547,12 +1309,8 @@ def show_main_menu() -> str:
     print(f"   Build Tools  : {build_str}")
 
     # Platform
-    if PLATFORM == "windows":
-        win_ver = WINDOWS_VERSION or detect_windows_version() or "unknown"
-        plat_str = f"Windows {win_ver}"
-    else:
-        linux_ver = OS_VERSION or detect_linux_version() or "unknown"
-        plat_str = f"Ubuntu {linux_ver}"
+    win_ver = WINDOWS_VERSION or detect_windows_version() or "unknown"
+    plat_str = f"Windows {win_ver}"
     py_ver = f"{sys.version_info.major}.{sys.version_info.minor}"
     print(f"   Platform     : {plat_str} | Python {py_ver}")
 
@@ -1714,8 +1472,7 @@ def download_kokoro_voices(pack_key: str) -> bool:
         print_status("Invalid TTS pack selection ", False)
         return False
 
-    python_exe = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                    ("python.exe" if PLATFORM == "windows" else "python"))
+    python_exe = str(VENV_DIR / "Scripts" / "python.exe")
 
     voice_ids = pack["voice_ids"]
     lang_code  = pack["lang_code"]
@@ -1859,8 +1616,7 @@ sys.exit(0)
 
 def download_embedding_model(model_name: str) -> bool:
     """Download the selected embedding model to local cache."""
-    python_exe = str(VENV_DIR / ("Scripts" if PLATFORM == "windows" else "bin") /
-                     ("python.exe" if PLATFORM == "windows" else "python"))
+    python_exe = str(VENV_DIR / "Scripts" / "python.exe")
     cache_dir = str(BASE_DIR / "data" / "embedding_cache")
     cache_parent = str(BASE_DIR / "data")
 
@@ -2023,7 +1779,6 @@ def refresh_configs():
 
         system = cfg_ini['system']
 
-        platform_val      = system.get('platform', PLATFORM)
         os_version        = system.get('os_version', 'unknown')
         python_version    = system.get('python_version', f"{sys.version_info.major}.{sys.version_info.minor}")
         backend_type      = system.get('backend_type', 'CPU_CPU')
@@ -2048,7 +1803,6 @@ def refresh_configs():
 
     # Recreate INI with single os_version key
     create_system_ini(
-        platform=platform_val,
         os_version=os_version,
         python_version=python_version,
         backend_type=backend_type,
@@ -2082,10 +1836,7 @@ def run_installer():
 
     # Run detections early (needed for main menu display)
     run_detections_once()
-    if PLATFORM == "windows":
-        detect_windows_version()
-    else:
-        detect_linux_version()
+    detect_windows_version()
 
     # ── Menu 1: Main Menu ──────────────────────────────────────────────
     main_choice = show_main_menu()
@@ -2143,12 +1894,6 @@ def run_installer():
         if not ensure_venv():
              return
 
-    # Install system dependencies (Linux only) - NOW FATAL
-    if PLATFORM == "linux":
-        if not install_linux_system_dependencies(backend):
-            print_status("Linux system dependencies installation failed. Installation aborted.", False)
-            return
-
     # Install Python dependencies (includes llama-cpp-python wheel) - NOW FATAL
     if not install_python_deps(backend):
         print_status("Python dependency installation failed. Installation aborted.", False)
@@ -2176,8 +1921,7 @@ def run_installer():
     backend_type = _determine_backend_type(backend)
 
     create_system_ini(
-        platform=PLATFORM,
-        os_version=f"Windows {WINDOWS_VERSION}" if PLATFORM == "windows" and WINDOWS_VERSION else (OS_VERSION or "unknown"),
+        os_version=f"Windows {WINDOWS_VERSION}" if WINDOWS_VERSION else "unknown",
         python_version=f"{sys.version_info.major}.{sys.version_info.minor}",
         backend_type=backend_type,
         embedding_model=embedding_model,

@@ -1,2 +1,58 @@
 # Qwen-Windows-Gguf
-Its the Qwen/Windows specific version of Chat-Gradio-Gguf.
+Status - Alpha; simplified Windows-only, Qwen-only fork of [Chat-Gradio-Gguf](https://github.com/wiseman-timelord/Chat-Gradio-Gguf).
+
+## Description
+A high-quality local chat interface for Qwen GGUF models on Windows 10 (WSL not required), using Python 3.12. An optimal number of features for a ChatBot, as well as, dynamic buttons/panels on the interface and websearch and RAG and TTS and archiving of sessions, and all on local models, so no imposed, limitations or guidelines (model dependent). This tool provides a comparable interface to premium non-agentic AI services, where the configuration is intended to be intelligent, without over-complication. The program uses offline libraries (apart from websearch) instead of, online services or repeat download or registration.
+
+### Focus
+- **Windows 10 22H2** — single-mode scripts, no Linux/dual-mode code (may work on Windows 11, but no version-specific code).
+- **Python 3.12** — no version-specific code for other Python versions (3.13 unsupported: Kokoro TTS requires <3.13).
+- **Qwen v3 to v3.8, 1B-35B, GGUF** — including variants such as HuiHui abliterated/uncensored builds. Detection is GGUF-metadata driven (architecture keys `qwen3`, `qwen3moe`, `qwen35`, `qwen36`, etc.), so renamed community uploads still resolve correctly.
+
+### Features
+- **Qt-Web Custom Browser**: The interface uses Qt6 WebEngine with Gradio, appearing as a regular application; your default browser is untouched.
+- **GPU Support**: Vulkan (binary download or compile), with GPU selection for multi CPU/GPU setups; CPU-only mode also supported.
+- **Research-Grade Tools**: RAG, web search, chunking, THINK-phase streaming, Markdown formatting, and file attachments.
+- **Text To Speech**: Kokoro TTS for realistic reading of output, filtered of symbols/tags/thinking appropriately.
+- **Common File Support**: Handles `.bat`, `.py`, `.ps1`, `.txt`, `.json`, `.yaml`, `.psd1`, `.xaml`, and other common formats.
+- **Configurable Context**: Set model context to 8192-138072, and batch output to 256-8192.
+- **Enhanced Interface Controls**: Load/unload models, manage sessions, shutdown, and configure settings.
+- **Highly Customizable UI**: 4-16 session history slots, 2-10 file slots, session log 450-1300px height, 2-8 lines of input.
+- **Collapsable Left/Right Columns**: Like modern AI interfaces, with concise collapsed view for commonly used buttons.
+- **Asynchronous Response Stream**: Separate thread with its own event loop, so response chunks are processed without blocking the Gradio UI.
+- **Thinking/Reasoning Compatible**: Qwen3/3.5/3.6 `<think>` streaming handled natively; dynamic prompt system adapts for, uncensored, nsfw, chat, code.
+- **Virtual Environment**: Isolated Python setup in `.venv` with `data` directory for constants, vectors, temp, and history.
+
+## Requirements
+- Windows 10 (22H2 focus; run as Administrator)
+- Python 3.12
+- A Qwen v3-v3.8 GGUF model, 1B-35B (e.g. from HuggingFace, including HuiHui variants)
+- Optional: Vulkan-capable GPU for acceleration
+
+## Usage
+1. Right-click `Qwen-Windows-Gguf.bat` and Run as Administrator.
+2. Select `2. Run Installation` to create the `.venv` and install the llama.cpp backend and dependencies.
+3. Select `1. Run Main Program` to launch the interface.
+4. On the Configuration page, set your model folder, pick the model, and load it.
+
+## Structure
+```
+project_root/
+│ Qwen-Windows-Gguf.bat      (menu: run / install)
+│ installer.py               (standalone installer script)
+│ launcher.py                (entry point: startup, shutdown)
+├── media/
+├── scripts/
+│ └── __init__.py
+│ └── display.py             (interface, Qt6 browser)
+│ └── inference.py           (model loading & inference)
+│ └── configure.py           (globals, constants, maps)
+│ └── tools.py               (web search, TTS)
+│ └── utility.py             (general functions, RAG)
+├── data/                    (created by installer)
+└── .venv/                   (created by installer)
+```
+
+## Credits
+- By WiseMan-TimeLord; forked from [Chat-Gradio-Gguf](https://github.com/wiseman-timelord/Chat-Gradio-Gguf).
+- [llama.cpp](https://github.com/ggml-org/llama.cpp), [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), [Gradio](https://gradio.app), [Kokoro TTS](https://github.com/hexgrad/kokoro).

@@ -1,5 +1,5 @@
 # launcher.py - The entry point of the main program.
-# v2: Targets Windows 10-11 / Ubuntu 24-25 / Python 3.11-3.12 / Gradio 5.x / PyQt6
+# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
 # Pydantic v2 shim is NOT required — Gradio 5.x is natively compatible with Pydantic v2.
 # Note: Python 3.13 is not supported — Kokoro TTS requires Python <3.13.
 
@@ -51,7 +51,6 @@ import os
 import faulthandler as _faulthandler
 _faulthandler.enable()
 
-import argparse
 import time
 from pathlib import Path
 from scripts.utility import short_path
@@ -61,14 +60,8 @@ from scripts.display import launch_display
 from scripts.utility import detect_cpu_config
 
 
-def parse_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('platform', choices=['windows', 'linux'], help='Target platform')
-    return parser.parse_args()
-
-
-def initialize_platform_settings():
-    """Initialize platform-specific settings with validation."""
+def initialize_backend_settings():
+    """Initialize backend settings with validation."""
     valid_backends = ["CPU_CPU", "VULKAN_CPU", "VULKAN_VULKAN"]
     if cfg.BACKEND_TYPE not in valid_backends:
         print(f"Warning: Invalid backend_type '{cfg.BACKEND_TYPE}', defaulting to CPU_CPU")
@@ -77,28 +70,15 @@ def initialize_platform_settings():
 
     # Vulkan VRAM optimisation
     if cfg.BACKEND_TYPE in ("VULKAN_CPU", "VULKAN_VULKAN"):
-        if cfg.PLATFORM == "windows":
-            os.environ["GGML_CUDA_NO_PINNED"] = "1"
-            os.environ["GGML_VK_NO_PIPELINE_CACHE"] = "0"
-            print("[Vulkan] GGML_CUDA_NO_PINNED=1   (frees ~300 MB VRAM)")
-            print("[Vulkan] GGML_VK_NO_PIPELINE_CACHE=0  (cached SPIR-V pipelines)")
-        else:
-            os.environ["GGML_CUDA_NO_PINNED"] = "1"
-            os.environ["GGML_VK_NO_PIPELINE_CACHE"] = "0"
-            print("[Vulkan] Exported GGML_CUDA_NO_PINNED=1")
-            print("[Vulkan] Exported GGML_VK_NO_PIPELINE_CACHE=0")
+        os.environ["GGML_CUDA_NO_PINNED"] = "1"
+        os.environ["GGML_VK_NO_PIPELINE_CACHE"] = "0"
+        print("[Vulkan] GGML_CUDA_NO_PINNED=1   (frees ~300 MB VRAM)")
+        print("[Vulkan] GGML_VK_NO_PIPELINE_CACHE=0  (cached SPIR-V pipelines)")
 
-    # Set platform-specific paths
-    if cfg.PLATFORM == "windows":
-        if "VULKAN" in cfg.BACKEND_TYPE:
-            cfg.LLAMA_CLI_PATH = "data/llama-vulkan-bin/llama-cli.exe"
-    elif cfg.PLATFORM == "linux":
-        if "VULKAN" in cfg.BACKEND_TYPE:
-            cfg.LLAMA_CLI_PATH = "data/llama-vulkan-bin/llama-cli"
-    else:
-        raise ValueError(f"Unsupported platform: {cfg.PLATFORM}")
+    if "VULKAN" in cfg.BACKEND_TYPE:
+        cfg.LLAMA_CLI_PATH = "data/llama-vulkan-bin/llama-cli.exe"
 
-    print(f"Script mode `{cfg.PLATFORM}` with backend `{cfg.BACKEND_TYPE}`")
+    print(f"Backend `{cfg.BACKEND_TYPE}`")
 
 
 def shutdown_program(llm_state, models_loaded_state, session_log, attached_files):
@@ -124,7 +104,7 @@ def shutdown_program(llm_state, models_loaded_state, session_log, attached_files
             print(f"Error unloading model: {str(e)}")
 
     print(f"Closing Program...")
-    shutdown_platform()
+    shutdown_windows()
 
     def force_exit():
         time.sleep(1)
@@ -145,15 +125,14 @@ def shutdown_program(llm_state, models_loaded_state, session_log, attached_files
     os._exit(0)
 
 
-def shutdown_platform():
-    """Platform-specific cleanup procedures."""
-    if cfg.PLATFORM == "windows":
-        try:
-            import pythoncom
-            pythoncom.CoUninitialize()
-        except:
-            pass
-    print(f"Cleaned up {cfg.PLATFORM} resources")
+def shutdown_windows():
+    """Windows cleanup procedures."""
+    try:
+        import pythoncom
+        pythoncom.CoUninitialize()
+    except:
+        pass
+    print("Cleaned up windows resources")
 
 
 def setup_directories():
@@ -215,10 +194,6 @@ def main():
         from scripts.configure import load_system_ini
         load_system_ini()
 
-        # Parse command-line arguments and initialize platform
-        args = parse_args()
-        cfg.PLATFORM = args.platform
-
         # Load user settings from JSON (model, context, etc.)
         load_config()
 
@@ -226,8 +201,8 @@ def main():
         from scripts.tools import initialize_tts
         initialize_tts()
 
-        # Then initialize platform settings (paths, validation)
-        initialize_platform_settings()
+        # Then initialize backend settings (paths, validation)
+        initialize_backend_settings()
 
         # Setup directories and paths
         script_dir = setup_directories()
@@ -255,7 +230,7 @@ def main():
 
     except Exception as e:
         print(f"Fatal error in launcher: {str(e)}")
-        shutdown_platform()
+        shutdown_windows()
         sys.exit(1)
 
 

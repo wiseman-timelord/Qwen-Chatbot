@@ -1,5 +1,5 @@
 # Script: `.\scripts\display.py`
-# v2: Gradio 5.x / PyQt6 WebEngine / Windows 10-11 / Ubuntu 24-25
+# Qwen-Windows-Gguf: Gradio 5.x / PyQt6 WebEngine / Windows 10
 # Includes Qt6 WebEngine browser launcher (merged from browser.py)
 
 # Standard library
@@ -70,9 +70,7 @@ from scripts.tools import (
 
 # =============================================================================
 # BROWSER FUNCTIONS (merged from browser.py)
-# Custom Qt6 WebEngine browser window (PyQt6) on all supported platforms.
-# - Windows 10/11 : Qt6 WebEngine (PyQt6)
-# - Ubuntu 24-25  : Qt6 WebEngine (PyQt6)
+# Custom Qt6 WebEngine browser window (PyQt6).
 # Falls back to system default browser if PyQt6 WebEngine is unavailable.
 # =============================================================================
 
@@ -128,41 +126,30 @@ def wait_for_gradio(url="http://localhost:7869", timeout=30):
 
 def launch_custom_browser(gradio_url="http://localhost:7869",
                           frameless=False, width=1400, height=900,
-                          title="Chat-Gradio-Gguf", maximized=False):
+                          title="Qwen-Windows-Gguf", maximized=False):
     print(f"[BROWSER] Launching at {gradio_url}")
-    print(f"[BROWSER] Platform: {cfg.PLATFORM}, Qt6 WebEngine (PyQt6)")
+    print("[BROWSER] Qt6 WebEngine (PyQt6)")
     try:
         _launch_qt6_browser(gradio_url, title, width, height, frameless, maximized)
     except ImportError as e:
         print(f"[BROWSER] Qt6 WebEngine not available: {e}")
         print("[BROWSER] Falling back to system browser")
-        if cfg.PLATFORM == "windows":
-            import os
-            os.startfile(gradio_url)          # preserves the port
-        else:
-            import webbrowser
-            webbrowser.open(gradio_url)
+        import os
+        os.startfile(gradio_url)          # preserves the port
     except Exception as e:
         print(f"[BROWSER] Qt6 WebEngine failed: {e}")
         traceback.print_exc()
         print("[BROWSER] Falling back to system browser")
-        if cfg.PLATFORM == "windows":
-            import os
-            os.startfile(gradio_url)
-        else:
-            import webbrowser
-            webbrowser.open(gradio_url)
+        import os
+        os.startfile(gradio_url)
 
 def _launch_qt6_browser(url, title, width, height, frameless, maximized):
-    """
-    Launch browser using PyQt6 + Qt6 WebEngine.
-    v2 primary browser on all supported platforms (Windows 10-11, Ubuntu 24-25).
-    """
+    """Launch browser using PyQt6 + Qt6 WebEngine."""
     global _qt_app, _qt_browser, _signal_handler
     import os as _os
 
-    # Windows: disable GPU acceleration when installer detected insufficient D3D support.
-    if cfg.PLATFORM == 'windows' and not getattr(cfg, 'GRAPHICS_ACCELERATION', True):
+    # Disable GPU acceleration when installer detected insufficient D3D support.
+    if not getattr(cfg, 'GRAPHICS_ACCELERATION', True):
         chromium_flags = (
             "--disable-gpu "
             "--disable-gpu-compositing "
@@ -175,35 +162,6 @@ def _launch_qt6_browser(url, title, width, height, frameless, maximized):
         _os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = chromium_flags
         _os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
         print("[BROWSER] Hardware GPU unavailable - software rendering enabled")
-        print(f"[BROWSER] Chromium flags: {chromium_flags}")
-
-    # Linux: Set Chromium flags for sandbox issues and GPU rendering.
-    if cfg.PLATFORM == 'linux':
-        if _os.geteuid() == 0:
-            print("[BROWSER] Running as root - disabling Chromium sandbox")
-            chromium_flags = "--no-sandbox --disable-gpu-sandbox"
-        else:
-            chromium_flags = "--disable-gpu-sandbox"
-        chromium_flags += (
-            " --disable-gpu --disable-software-rasterizer"
-            " --disable-features=GpuProcessSurface,CanvasOopRasterization"
-            " --no-first-run --disable-default-apps"
-            " --disable-background-timer-throttling"
-            " --disable-features=Translate,InterestFeedContentSuggestions,MediaRouter,"
-            "OptimizationHints,OptimizationGuideModelDownloading,"
-            "AutofillServerCommunication,PasswordManager"
-            " --disable-sync --disable-component-extensions-with-background-pages"
-            " --disable-backgrounding-occluded-windows --disable-renderer-backgrounding"
-        )
-        _os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = chromium_flags
-        _os.environ["QTWEBENGINE_DISABLE_GPU"] = "1"
-        _os.environ["QT_QUICK_BACKEND"] = "software"
-        _os.environ["QT_QPA_PLATFORM"] = "xcb"
-        _os.environ["QT_QPA_PLATFORMTHEME"] = ""
-        _os.environ["QT_QPA_DISABLE_SESSION_MANAGER"] = "1"
-        _os.environ["QT_LOGGING_RULES"] = "qt.qpa.*=false;qt.webengine.*=false"
-        print("[BROWSER] GPU acceleration disabled, using software rendering")
-        print("[BROWSER] DBus integration disabled to prevent startup delays")
         print(f"[BROWSER] Chromium flags: {chromium_flags}")
 
     from PyQt6.QtWidgets import QApplication
@@ -2134,7 +2092,7 @@ def launch_display():
     final_css = css_common
 
     blocks_kwargs = {
-        "title": "Chat-Gradio-Gguf",
+        "title": "Qwen-Windows-Gguf",
         "css": final_css.strip()
     }
 
@@ -2360,11 +2318,7 @@ def launch_display():
                         )
 
                     with gr.Row():
-                        if cfg.PLATFORM == "windows":
-                            system_label = "Windows Audio"
-                        else:
-                            backend = getattr(cfg, 'TTS_AUDIO_BACKEND', 'unknown')
-                            system_label = f"Linux Audio ({backend})"
+                        system_label = "Windows Audio"
 
                         sound_output_display = gr.Textbox(
                             label=f"Audio Output ({system_label})",
@@ -2510,9 +2464,9 @@ def launch_display():
 
             with gr.Tab("About/Debug"):
                 with gr.Group():
-                    gr.Markdown("### Chat-Gradio-Gguf")
+                    gr.Markdown("### Qwen-Windows-Gguf")
                     gr.HTML("""
-                        <p>A Windows/Linux Chatbot using, Gradio and llama.cpp, by <a href="mailto:wiseman-timelord@mail.com">WiseMan-Time-Lord</a> at <a href="http://wisetime.rf.gd/">WiseTime.Rf.Gd</a></p>
+                        <p>A Windows Chatbot for Qwen GGUF models using, Gradio and llama.cpp, by <a href="mailto:wiseman-timelord@mail.com">WiseMan-Time-Lord</a> at <a href="http://wisetime.rf.gd/">WiseTime.Rf.Gd</a></p>
                         <p><strong>Where you may find, this and my other, programming projects on </strong> <a href="https://github.com/wiseman-timelord">GitHub</a></p>
                         <p><strong>Support/Donate to assist in the continuation of my projects at, </strong> <a href="https://patreon.com/WiseManTimeLord">Patreon</a>, <a href="https://ko-fi.com/WiseManTimeLord">Ko-Fi</a></p>
                     """, elem_classes=["info-textbox-match"])
@@ -3540,7 +3494,7 @@ def launch_display():
             frameless=False,
             width=1400,
             height=900,
-            title="Chat-Gradio-Gguf",
+            title="Qwen-Windows-Gguf",
             maximized=True
         )
     else:
