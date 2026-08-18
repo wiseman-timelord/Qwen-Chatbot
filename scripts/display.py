@@ -408,12 +408,16 @@ def _line_category(line: str):
 
 
 def single_space_output(text: str) -> str:
-    """Return *text* single-spaced: one newline per line, no blank lines between.
+    """Return *text* with normalised spacing: at most one blank line anywhere.
 
-    Blank lines are kept in the three places markdown needs one: ahead of a
-    table (a table cannot interrupt a paragraph), ahead of a "---" rule (pulled
-    up against prose it becomes a setext heading underline instead), and after a
-    list or quote (a bare line following either is absorbed into the last item).
+    Prose paragraph breaks (blank line between two plain-prose lines) survive,
+    so the model's own paragraphing renders as paragraphs. Blank lines are also
+    kept where markdown needs one: ahead of a table (a table cannot interrupt a
+    paragraph), ahead of a "---" rule (pulled up against prose it becomes a
+    setext heading underline instead), and after a list or quote (a bare line
+    following either is absorbed into the last item). Blank lines at block
+    boundaries — e.g. between a lead-in line and the list it introduces, or
+    between list items — are dropped, keeping those blocks tight.
 
     Code is handed through verbatim. Blank lines carry meaning inside a fenced
     block and inside the <pre> that the Pygments highlighter produces.
@@ -480,7 +484,7 @@ def single_space_output(text: str) -> str:
             elif cat or prev:
                 pass                            # block boundary needs no blank
             else:
-                line = LINE_BREAK_TAG + line    # prose following prose
+                out.append("")                  # prose paragraph break survives
         elif prev == "table" and cat != "table":
             # The model ran straight from the last row into ordinary text. Give
             # the table the blank line it needs, or this line becomes a row.
@@ -2070,16 +2074,22 @@ def launch_display():
     }
     /* Gradio 5's chatbot stylesheet carries
            .message-wrap > div p:not(:first-child) { margin-top: var(--spacing-xxl) }
-       which is roughly 16px, and that margin is the blank line seen between
-       paragraphs. single_space_output() removes nearly every paragraph break
-       before it gets here; this closes up the handful that have to survive,
-       such as the one ahead of a table or after a list. */
+       which is roughly 16px — too tall. Paragraph breaks that survive
+       single_space_output() (the model's own prose paragraphing, plus the
+       required blank ahead of a table or after a list) get a moderate gap
+       instead; everything else stays tight. */
     .message-wrap > div p,
     .message p,
     .message-content p,
     .prose.chatbot p {
         margin-top: 0 !important;
         margin-bottom: 0 !important;
+    }
+    .message-wrap > div p:not(:first-child),
+    .message p:not(:first-child),
+    .message-content p:not(:first-child),
+    .prose.chatbot p:not(:first-child) {
+        margin-top: 0.7em !important;
     }
     /* Same treatment for lists: Gradio's stylesheet puts vertical margins on
        ul/ol/li, which reads as blank lines between bullets. */
