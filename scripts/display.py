@@ -168,6 +168,16 @@ def _launch_qt6_browser(url, title, width, height, frameless, maximized):
     from PyQt6.QtWebEngineWidgets import QWebEngineView
     from PyQt6.QtWebEngineCore import QWebEngineSettings, QWebEnginePage
     from PyQt6.QtCore import QUrl, Qt, QTimer, pyqtSignal, QObject
+    from PyQt6.QtGui import QIcon
+
+    # The AppUserModelID has to be set before the first window is created,
+    # otherwise the taskbar button stays bound to python.exe's identity and
+    # shows the interpreter icon.
+    try:
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(cfg.APP_USER_MODEL_ID)
+    except Exception as e:
+        print(f"[BROWSER] Could not set AppUserModelID: {e}")
 
     class CloseSignalHandler(QObject):
         close_signal = pyqtSignal()
@@ -183,9 +193,19 @@ def _launch_qt6_browser(url, title, width, height, frameless, maximized):
             self.close_signal.emit()
 
     _qt_app = QApplication(sys.argv)
+
+    icon_path = cfg.get_app_icon_path()
+    app_icon = QIcon(icon_path) if icon_path else None
+    if app_icon is not None:
+        _qt_app.setWindowIcon(app_icon)
+    else:
+        print(f"[BROWSER] Icon not found: {cfg.APP_ICON_PATH}")
+
     _signal_handler = CloseSignalHandler(_qt_app)
     _qt_browser = QWebEngineView()
     _qt_browser.setWindowTitle(title)
+    if app_icon is not None:
+        _qt_browser.setWindowIcon(app_icon)
     if frameless:
         _qt_browser.setWindowFlags(Qt.WindowType.FramelessWindowHint)
     settings = _qt_browser.settings()
@@ -3514,6 +3534,13 @@ def launch_display():
         "share": False,
         "inbrowser": False,
     }
+
+    # Favicon as well as window icon: the page icon is what Qt WebEngine reports
+    # through iconChanged, and a missing one leaves the browser default showing
+    # in the tab-less window frame.
+    favicon = cfg.get_app_icon_path()
+    if favicon:
+        launch_kwargs["favicon_path"] = favicon
 
     gradio_thread = threading.Thread(
         target=lambda: demo.launch(**launch_kwargs),

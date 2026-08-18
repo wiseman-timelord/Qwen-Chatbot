@@ -5,8 +5,12 @@ setlocal enabledelayedexpansion
 REM ==== Static Configuration ====
 set "TITLE=Qwen-Windows-Gguf"
 title %TITLE%
-mode con cols=82 lines=25
-powershell -noprofile -command "& { $w = $Host.UI.RawUI; $b = $w.BufferSize; $b.Height = 6000; $w.BufferSize = $b; }"
+REM Console geometry. Windows Terminal, the default host from Windows 11 22H2,
+REM does not implement console resizing, so both calls are best-effort: they
+REM shape the window under conhost and are silently skipped elsewhere rather
+REM than printing an error above the menu.
+mode con cols=82 lines=25 >nul 2>&1
+powershell -noprofile -command "& { try { $w = $Host.UI.RawUI; $b = $w.BufferSize; $b.Height = 6000; $w.BufferSize = $b } catch { } }" >nul 2>&1
 
 :: DP0 TO SCRIPT BLOCK
 set "ScriptDirectory=%~dp0"
