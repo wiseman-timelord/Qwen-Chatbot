@@ -161,6 +161,19 @@ _tts_state_lock = threading.Lock()  # Thread-safety for TTS state globals
 session_attached_files = []
 session_vector_files = []
 
+# Application icon. Used for the Qt window icon, the Windows taskbar button and
+# the Gradio favicon, so the three stay in step from one definition.
+APP_ICON_PATH = Path(__file__).resolve().parent.parent / "images" / "Icon_Terminal.ico"
+# Explicit AppUserModelID: without one, Windows groups the taskbar button under
+# the host python.exe and shows the interpreter's icon instead of the window's.
+APP_USER_MODEL_ID = "WiseManTimeLord.QwenWindowsGguf"
+
+
+def get_app_icon_path():
+    """Return the icon path as a string, or None when the file is absent."""
+    return str(APP_ICON_PATH) if APP_ICON_PATH.is_file() else None
+
+
 # UI Constants/Variables
 USER_COLOR = "#ffffff"
 THINK_COLOR = "#c8a2c8"

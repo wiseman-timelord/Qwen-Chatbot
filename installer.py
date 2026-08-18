@@ -361,7 +361,7 @@ def check_version_compatibility():
     win_ver = detect_windows_version()
     if win_ver in ("unsupported", "7", "8", "8.1"):
         print_status(
-            f"Windows {win_ver} is not supported. Requires Windows 10.", False
+            f"Windows {win_ver} is not supported. Requires Windows 10 or 11.", False
         )
         return False
     return True
