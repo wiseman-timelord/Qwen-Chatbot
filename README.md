@@ -1,5 +1,5 @@
 # Qwen-Windows-Gguf
-Status - Beta; needs more testing. Model loading now fixed. 
+Status - Beta; needs more testing, most recent update "Output format fixed". 
 
 ## Description
 A high-quality local chat interface for Qwen GGUF models on Windows 10 (WSL not required), using Python 3.12. An optimal number of features for a ChatBot, as well as, dynamic buttons/panels on the interface and websearch and RAG and TTS and archiving of sessions, and all on local models, so no imposed, limitations or guidelines (model dependent). This tool provides a comparable interface to premium non-agentic AI services, where the configuration is intended to be intelligent, without over-complication. The program uses offline libraries (apart from websearch) instead of, online services or repeat download or registration. This program is a fork of  [Chat-Gradio-Gguf](https://github.com/wiseman-timelord/Chat-Gradio-Gguf), which tends to be extremely hard for AI to fix in my last attempt, hence I have focused the program on my specific needs. Main thing, Qwen-Windows-Gguf does NOT have the extra-blank-lines bug that plagued development of Chat-Gradio-Gguf, so major victory/progression in my mind.
