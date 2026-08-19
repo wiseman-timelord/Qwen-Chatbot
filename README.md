@@ -28,9 +28,10 @@ A high-quality local chat interface for Qwen GGUF models on Windows 10/11 (WSL n
 - **Qwen v3 to v3.8, 1B-35B, GGUF** — See models section below.
 
 ### Models Support 
-Remember while you can always update model support via editing the llama.cpp version in the installer.py script ie b8943 or whatever the [latest release](https://github.com/ggml-org/llama.cpp/releases) is, there are also identifiers for model detection within the scripts, unsure currently if future models will identify correctly, however...
+Remember while you can always update model support via editing the llama.cpp version in the installer.py script ie b8943 or whatever the [latest release](https://github.com/ggml-org/llama.cpp/releases) is, but there are also identifiers for model detection within the main program, unsure currently if future models will identify correctly, however...
 - Specifically only Qwen versions 3/3.5/3.6/3.8 in 4B-35BA3B, including, Abliterated, Heretic, HuiHui, Uncensored etc. 
 - I advise Gguf files in q5 quantization, unless this would cause excessive overflow into system ram, in which case use q4.
+- One would do a [search on HuggingFace.Co](https://huggingface.co/models?search=qwen3.8-9b-gguf), and locate the correct gguf file, [for example the gguf file there](https://huggingface.co/saga404/Qwen3.8-9B-heretic-uncensored-Q5_0-GGUF/tree/main) for 7GB/8GB VRAM.
 
 ## Usage
 1. Right-click `Qwen-Windows-Gguf.bat` and Run as Administrator.
