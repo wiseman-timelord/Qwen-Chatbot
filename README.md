@@ -34,6 +34,7 @@ Remember while you can always update model support via editing the llama.cpp ver
 - To find a model, for example [search HuggingFace.Co](https://huggingface.co/models?search=qwen%203.6%20gguf), and locate a gguf file to fit your vram, for example [this one is interesting](https://huggingface.co/tvall43/Qwen3.6-14B-A3B-FableVibes-GGUF/tree/main), only 3B loaded at a time and smaller than 35B.
 - Generally use a smaller Context Length ie 32768 for a websearch, larger context tend to be slower and use more memory. 
 - Gguf/Llama.Cpp does not have Sliding Context window, but the program does have RAG and some other thing, unsure. 
+- The newer Qwen models now have larger Batch_Output token limits, great for smaller scripts, but this program is no Agentic Framework.
 
 ## Usage
 1. Right-click `Qwen-Windows-Gguf.bat` and Run as Administrator.
