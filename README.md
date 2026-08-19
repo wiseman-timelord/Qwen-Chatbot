@@ -27,6 +27,10 @@ A high-quality local chat interface for Qwen GGUF models on Windows 10/11 (WSL n
 - **Python 3.10-3.12** — no version-specific code for other Python versions (3.13 unsupported: Kokoro TTS requires <3.13).
 - **Qwen v3 to v3.8, 1B-35B, GGUF** — including variants such as HuiHui abliterated/uncensored builds.
 
+### Models Support 
+somewhat outdated here on readme.md, remember you can always update model support via editing the llama.cpp version in the installer.py script ie b8943 or whatever the [latest release](https://github.com/ggml-org/llama.cpp/releases) is...
+- Specifically only Qwen versions 3/3.5/3.6/3.8 in 4B-35BA3B, including, Abliterated, Heretic, HuiHui, etc. 
+
 ## Usage
 1. Right-click `Qwen-Windows-Gguf.bat` and Run as Administrator.
 2. Select `2. Run Installation` to create the `.venv` and install the llama.cpp backend and dependencies.
