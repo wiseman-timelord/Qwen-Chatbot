@@ -68,4 +68,6 @@ project_root/
 
 ## Credits
 - Qwen-Chatbot was forked from [Chat-Gradio-Gguf](https://github.com/wiseman-timelord/Chat-Gradio-Gguf), a overly-complicated version of Qwen-Chatbot if not on windows and using qwen.
-- [llama.cpp](https://github.com/ggml-org/llama.cpp), [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), [Gradio](https://gradio.app), [Kokoro TTS](https://github.com/hexgrad/kokoro).
+- [llama.cpp](https://github.com/ggml-org/llama.cpp) and [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), are used for Inference.
+- [Gradio](https://gradio.app) is used for the GUI.
+- [Kokoro TTS](https://github.com/hexgrad/kokoro) is used for the TTS.
