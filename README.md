@@ -37,7 +37,7 @@ Remember while you can always update model support via editing the llama.cpp ver
 - The newer Qwen models have larger Batch_Output, while in program is max 8192 tokens, options can be edited in configure.py.
 
 ## Usage
-1. Right-click `Qwen-Windows-Gguf.bat` and Run as Administrator.
+1. Right-click `Qwen-Chatbot.bat` and Run as Administrator.
 2. Select `2. Run Installation` to create the `.venv` and install the llama.cpp backend and dependencies.
 3. Select `1. Run Main Program` to launch the interface.
 4. On the Configuration page, set your model folder, pick the model, and load it.
@@ -46,7 +46,7 @@ Remember while you can always update model support via editing the llama.cpp ver
 ## Structure
 ```
 project_root/
-│ Qwen-Windows-Gguf.bat      (menu: run / install)
+│ Qwen-Chatbot.bat      (menu: run / install)
 │ installer.py               (standalone installer script)
 │ launcher.py                (entry point: startup, shutdown)
 ├── media/
@@ -66,9 +66,6 @@ project_root/
 - we need dynamic "Emergency Stop" button for stopping inference, this means that for every stage we will need optimized code/functions to be able to; When user clicks "Send Input" , then display a red "Emergency Stop" button to the right of the " ..Please Wait.. " button. If the dynamic button is pressed at any stage, then it will immedieately cancel inference, returning the user back to editing the prompt they just sent, as if they had not sent it yet. Obviouslys failing stopping the binaries in timely mannor could result in termination of the relevant llama binaries, and then in which case it would re-load the model upon next click of "Send Input", subject to, One-Shot or Mem-Lock. having returned to the normal editing mode of previous input or having completed an iteration, then Emergency Stop will disappear, its only visible between, promptly after the user has clicked Send Input and shortly before the response is complete.  
 - STT - We could have a STT button in the tools section, enabling the input box to switch to a sample display and a button, the user would click and hold the button to record, and then let go of mouse when they finished recording, and then the wave appear in the box, then AI translate this into words, these words are then shown/editable in the text input box, and the wave record box will hide, but there will be a new button at bottom of text input when STT is enabled, to switch back to the STT Recording box and hide the text box again, so the user can re-record (blanking the previous recorded text upon pressing record). if the user selects STT again to disable it then, the wave box will hide, the text input box will be shown, and the Re-Record button will be hidden. Hmm. Is this the best way to do this? needs a brainstorm, but we want to have annotated conversations with AI in teh conversation log, and ability to edit the given annotations and resend, so one would assume that cancelling here would then make the previous stt annotated recording active text in the editing box, while presented as if the user has not commited to saying that line yet. This would require button for tool on right of User Input box, that then switch the User Input box for 2/3 of vertical from top as a live wave display to show sound input through mic, while underneath a single line of annotation, with dynamic expanding slider bar under.
 
-### Reasoning
-
-
 ## Credits
-- By WiseMan-TimeLord; forked from [Chat-Gradio-Gguf](https://github.com/wiseman-timelord/Chat-Gradio-Gguf).
+- Qwen-Chatbot was forked from [Chat-Gradio-Gguf](https://github.com/wiseman-timelord/Chat-Gradio-Gguf), a overly-complicated version of Qwen-Chatbot if not on windows and using qwen.
 - [llama.cpp](https://github.com/ggml-org/llama.cpp), [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), [Gradio](https://gradio.app), [Kokoro TTS](https://github.com/hexgrad/kokoro).
