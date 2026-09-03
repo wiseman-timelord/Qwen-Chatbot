@@ -629,77 +629,164 @@ def create_files_and_directories(backend: str) -> None:
 # =============================================================================
 # EMBEDDING BACKEND INSTALLATION
 # =============================================================================
+# Order matters. kokoro (in BASE_REQ) and sentence-transformers both depend on
+# torch. If torch is absent when they install, pip pulls the default PyPI
+# Windows wheel (no +cpu tag). That wheel then fights the intentional CPU build
+# from download.pytorch.org, leaving the venv with a broken or missing torch
+# (symptom: "No module named 'torch'" at verification).
+#
+# Fix:
+#   1. install_torch_cpu() runs FIRST, before BASE_REQ.
+#   2. After transformers / sentence-transformers, re-assert the CPU torch so
+#      any overwrite from dependency resolution is undone.
+#   3. Verify import with the venv python.exe (full path — no activation needed).
 
-def install_embedding_backend() -> bool:
-    """Install PyTorch CPU and sentence-transformers."""
-    python_exe = str(VENV_DIR / "Scripts" / "python.exe")
-    pip_exe    = str(VENV_DIR / "Scripts" / "pip.exe")
+def install_torch_cpu() -> bool:
+    """Install the official CPU torch wheel from pytorch.org.
 
-    torch_req                   = "torch>=2.5.0"
-    transformers_version        = "transformers>=4.44.0"
-    sentence_transformers_version = "sentence-transformers>=3.3.0"
+    Must run before any package that declares a torch dependency (kokoro,
+    sentence-transformers, etc.).
+    """
+    pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
+    torch_req = "torch>=2.5.0"
 
     print_status(f"Installing PyTorch (CPU) — {torch_req}...")
-    if not pip_install_with_retry(pip_exe, torch_req,
-                                  ["--index-url", "https://download.pytorch.org/whl/cpu",
-                                   "--upgrade-strategy", "only-if-needed"],
-                                  max_retries=10, initial_delay=5.0):
+    if not pip_install_with_retry(
+        pip_exe,
+        torch_req,
+        [
+            "--index-url", "https://download.pytorch.org/whl/cpu",
+            "--upgrade-strategy", "only-if-needed",
+        ],
+        max_retries=10,
+        initial_delay=5.0,
+    ):
         print_status("PyTorch installation failed", False)
         return False
     print_status("PyTorch (CPU) installed")
 
+    # Torch's install can disturb setuptools; restore a known-good version.
     subprocess.run(
         [pip_exe, "install", "setuptools>=80.0", "--upgrade", "--quiet"],
-        capture_output=True, timeout=120
+        capture_output=True,
+        timeout=120,
     )
     print_status("setuptools restored after torch install")
+    return True
+
+
+def _reassert_torch_cpu() -> bool:
+    """Force the CPU torch build after dependency packages may have overwritten it.
+
+    PyPI serves version 'X.Y.Z' while the pytorch.org CPU index serves 'X.Y.Z+cpu'.
+    pip treats those as different distributions, so packages that depend on torch
+    can silently replace the CPU build. Re-installing from the CPU index with
+    --force-reinstall puts the correct build back.
+    """
+    pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
+    torch_req = "torch>=2.5.0"
+    print_status("Re-asserting PyTorch (CPU) after dependency packages...")
+    if not pip_install_with_retry(
+        pip_exe,
+        torch_req,
+        [
+            "--index-url", "https://download.pytorch.org/whl/cpu",
+            "--force-reinstall",
+            "--no-deps",
+        ],
+        max_retries=5,
+        initial_delay=3.0,
+    ):
+        print_status("Failed to re-assert PyTorch (CPU)", False)
+        return False
+    print_status("PyTorch (CPU) re-asserted")
+    return True
+
+
+def install_embedding_backend() -> bool:
+    """Install transformers + sentence-transformers, lock CPU torch, verify imports.
+
+    Assumes install_torch_cpu() has already run (called earlier from
+    install_python_deps). Does not install torch at the start — only re-asserts
+    it after the packages that might have replaced it.
+    """
+    python_exe = str(VENV_DIR / "Scripts" / "python.exe")
+    pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
+
+    transformers_version = "transformers>=4.44.0"
+    sentence_transformers_version = "sentence-transformers>=3.3.0"
 
     print_status(f"Installing {transformers_version}...")
-    if not pip_install_with_retry(pip_exe, transformers_version,
-                                  ["--upgrade-strategy", "only-if-needed"],
-                                  max_retries=10, initial_delay=5.0):
+    if not pip_install_with_retry(
+        pip_exe,
+        transformers_version,
+        ["--upgrade-strategy", "only-if-needed"],
+        max_retries=10,
+        initial_delay=5.0,
+    ):
         print_status("transformers installation failed", False)
         return False
     print_status("transformers installed")
 
     print_status(f"Installing {sentence_transformers_version}...")
-    if not pip_install_with_retry(pip_exe, sentence_transformers_version,
-                                  ["--upgrade-strategy", "only-if-needed"],
-                                  max_retries=10, initial_delay=5.0):
+    if not pip_install_with_retry(
+        pip_exe,
+        sentence_transformers_version,
+        ["--upgrade-strategy", "only-if-needed"],
+        max_retries=10,
+        initial_delay=5.0,
+    ):
         print_status("sentence-transformers installation failed", False)
         return False
     print_status("sentence-transformers installed")
 
-    verify_script = '''
-import sys, os
-os.environ["CUDA_VISIBLE_DEVICES"] = ""
-try:
-    import torch
-    torch.set_grad_enabled(False)
-    print(f"torch: {torch.__version__}")
-    from sentence_transformers import SentenceTransformer
-    print("sentence_transformers: OK")
-    print("SUCCESS")
-except Exception as e:
-    print(f"FAILED: {e}")
-    sys.exit(1)
-'''
+    # Dependency resolution above may have swapped the CPU torch for a PyPI build.
+    if not _reassert_torch_cpu():
+        return False
+
+    # Verify with the venv interpreter (full path — activation is not required).
+    verify_script = (
+        "import sys, os\n"
+        "os.environ['CUDA_VISIBLE_DEVICES'] = ''\n"
+        "try:\n"
+        "    import torch\n"
+        "    torch.set_grad_enabled(False)\n"
+        "    print(f'torch: {torch.__version__}')\n"
+        "    from sentence_transformers import SentenceTransformer\n"
+        "    print('sentence_transformers: OK')\n"
+        "    print('SUCCESS')\n"
+        "except Exception as e:\n"
+        "    print(f'FAILED: {e}')\n"
+        "    print(f'python: {sys.executable}')\n"
+        "    print(f'sys.path[0]: {sys.path[0] if sys.path else \"\"}')\n"
+        "    try:\n"
+        "        import importlib.util\n"
+        "        spec = importlib.util.find_spec('torch')\n"
+        "        print(f'torch spec: {spec}')\n"
+        "    except Exception as e2:\n"
+        "        print(f'torch spec error: {e2}')\n"
+        "    sys.exit(1)\n"
+    )
     verify_path = TEMP_DIR / "verify_embedding.py"
     try:
         verify_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(verify_path, 'w', encoding='utf-8') as f:
+        with open(verify_path, "w", encoding="utf-8") as f:
             f.write(verify_script)
         verify_result = subprocess.run(
-            [python_exe, str(verify_path)], capture_output=True, text=True, timeout=120
+            [python_exe, str(verify_path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
         )
         verify_path.unlink(missing_ok=True)
 
-        if verify_result.returncode == 0 and "SUCCESS" in verify_result.stdout:
+        out = (verify_result.stdout or "") + (verify_result.stderr or "")
+        if verify_result.returncode == 0 and "SUCCESS" in out:
             print_status("Embedding backend verified")
             return True
         else:
             print_status("Embedding backend verification failed", False)
-            print(f"Output: {verify_result.stdout}")
+            print(f"Output: {out.strip()}")
             return False
     except Exception as e:
         print_status(f"Verification error: {e}", False)
@@ -748,6 +835,12 @@ def install_python_deps(backend: str, skip_if_present: bool = False) -> bool:
 
         all_requirements = get_dynamic_requirements()
 
+        # CPU torch MUST be present before BASE_REQ. kokoro (and any other
+        # package that depends on torch) will otherwise pull the default PyPI
+        # Windows wheel, which is not the +cpu build and later breaks imports.
+        if not install_torch_cpu():
+            return False
+
         print_status(f"Installing Python packages...")
         total = len(all_requirements)
         for i, req in enumerate(all_requirements, 1):
@@ -763,6 +856,7 @@ def install_python_deps(backend: str, skip_if_present: bool = False) -> bool:
 
         print_status("Base packages installed")
 
+        # transformers + sentence-transformers, then re-assert CPU torch, verify
         if not install_embedding_backend():
             return False
 
