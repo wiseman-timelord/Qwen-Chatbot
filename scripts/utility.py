@@ -1,5 +1,5 @@
 # scripts/utility.py
-# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x
+# Qwen-Chatbot: Windows 10 / Python 3.12 / Gradio 5.x
 
 # Standard library imports
 import re

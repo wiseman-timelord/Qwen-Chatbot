@@ -1,5 +1,5 @@
 # scripts/tools.py
-# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x
+# Qwen-Chatbot: Windows 10 / Python 3.12 / Gradio 5.x
 """
 Centralized tools module for web search and TTS.
 

@@ -1,5 +1,5 @@
-# Script: installer.py - Installation script for Qwen-Windows-Gguf
-# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
+# Script: installer.py - Installation script for Qwen-Chatbot
+# Qwen-Chatbot: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
 # Note: Uses sentence-transformers for embeddings (offline)
 # Note: Uses PyQt6 WebEngine for custom browser window
 
@@ -17,7 +17,7 @@ import re
 
 # Constants / Variables
 _PY_TAG = f"cp{sys.version_info.major}{sys.version_info.minor}"
-APP_NAME = "Qwen-Windows-Gguf"
+APP_NAME = "Qwen-Chatbot"
 BASE_DIR = Path(__file__).parent
 VENV_DIR = BASE_DIR / ".venv"
 LLAMACPP_GIT_REPO = "https://github.com/ggml-org/llama.cpp.git"
@@ -346,7 +346,7 @@ def check_version_compatibility():
     global WINDOWS_VERSION, PYTHON_VERSION
 
     if sys.version_info < (3, 11):
-        print_status("Python 3.12 required for Qwen-Windows-Gguf", False)
+        print_status("Python 3.12 required for Qwen-Chatbot", False)
         return False
 
     if sys.version_info >= (3, 13):
@@ -605,7 +605,7 @@ def print_header(section: str = "Initialization") -> None:
     clear_screen()
     width = shutil.get_terminal_size().columns - 1
     print("=" * width)
-    print(f"    Qwen-Windows-Gguf — {section}")
+    print(f"    Qwen-Chatbot — {section}")
     print("=" * width)
     print()
 

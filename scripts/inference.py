@@ -1,5 +1,5 @@
 # scripts/inference.py
-# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / Qwen GGUF models
+# Qwen-Chatbot: Windows 10 / Python 3.12 / Gradio 5.x / Qwen GGUF models
 
 """
 Consolidated inference module combining model loading/management and prompt generation.

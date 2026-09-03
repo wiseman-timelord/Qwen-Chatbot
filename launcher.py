@@ -1,5 +1,5 @@
 # launcher.py - The entry point of the main program.
-# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
+# Qwen-Chatbot: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
 # Pydantic v2 shim is NOT required — Gradio 5.x is natively compatible with Pydantic v2.
 # Note: Python 3.13 is not supported — Kokoro TTS requires Python <3.13.
 

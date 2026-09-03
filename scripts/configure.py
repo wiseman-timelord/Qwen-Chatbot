@@ -1,5 +1,5 @@
 # scripts/configure.py
-# Qwen-Windows-Gguf: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
+# Qwen-Chatbot: Windows 10 / Python 3.12 / Gradio 5.x / PyQt6 / Qwen GGUF models
 
 import json
 import configparser

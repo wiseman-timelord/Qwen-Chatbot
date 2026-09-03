@@ -1,5 +1,5 @@
 # Script: `.\scripts\display.py`
-# Qwen-Windows-Gguf: Gradio 5.x / PyQt6 WebEngine / Windows 10
+# Qwen-Chatbot: Gradio 5.x / PyQt6 WebEngine / Windows 10
 # Includes Qt6 WebEngine browser launcher (merged from browser.py)
 
 # Standard library
@@ -126,7 +126,7 @@ def wait_for_gradio(url="http://localhost:7869", timeout=30):
 
 def launch_custom_browser(gradio_url="http://localhost:7869",
                           frameless=False, width=1400, height=900,
-                          title="Qwen-Windows-Gguf", maximized=False):
+                          title="Qwen-Chatbot", maximized=False):
     print(f"[BROWSER] Launching at {gradio_url}")
     print("[BROWSER] Qt6 WebEngine (PyQt6)")
     try:
@@ -2143,7 +2143,7 @@ def launch_display():
     final_css = css_common
 
     blocks_kwargs = {
-        "title": "Qwen-Windows-Gguf",
+        "title": "Qwen-Chatbot",
         "css": final_css.strip()
     }
 
@@ -2515,7 +2515,7 @@ def launch_display():
 
             with gr.Tab("About/Debug"):
                 with gr.Group():
-                    gr.Markdown("### Qwen-Windows-Gguf")
+                    gr.Markdown("### Qwen-Chatbot")
                     gr.HTML("""
                         <p>A Windows Chatbot for Qwen GGUF models using, Gradio and llama.cpp, by <a href="mailto:wiseman-timelord@mail.com">WiseMan-Time-Lord</a> at <a href="http://wisetime.rf.gd/">WiseTime.Rf.Gd</a></p>
                         <p><strong>Where you may find, this and my other, programming projects on </strong> <a href="https://github.com/wiseman-timelord">GitHub</a></p>
@@ -3554,7 +3554,7 @@ def launch_display():
             frameless=False,
             width=1400,
             height=900,
-            title="Qwen-Windows-Gguf",
+            title="Qwen-Chatbot",
             maximized=True
         )
     else:
