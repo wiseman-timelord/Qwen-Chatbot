@@ -665,7 +665,6 @@ def install_torch_cpu() -> bool:
         return False
     print_status("PyTorch (CPU) installed")
 
-    # Torch's install can disturb setuptools; restore a known-good version.
     subprocess.run(
         [pip_exe, "install", "setuptools>=80.0", "--upgrade", "--quiet"],
         capture_output=True,
@@ -676,13 +675,7 @@ def install_torch_cpu() -> bool:
 
 
 def _reassert_torch_cpu() -> bool:
-    """Force the CPU torch build after dependency packages may have overwritten it.
-
-    PyPI serves version 'X.Y.Z' while the pytorch.org CPU index serves 'X.Y.Z+cpu'.
-    pip treats those as different distributions, so packages that depend on torch
-    can silently replace the CPU build. Re-installing from the CPU index with
-    --force-reinstall puts the correct build back.
-    """
+    """Force the CPU torch build after dependency packages may have overwritten it."""
     pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
     torch_req = "torch>=2.5.0"
     print_status("Re-asserting PyTorch (CPU) after dependency packages...")
@@ -707,8 +700,7 @@ def install_embedding_backend() -> bool:
     """Install transformers + sentence-transformers, lock CPU torch, verify imports.
 
     Assumes install_torch_cpu() has already run (called earlier from
-    install_python_deps). Does not install torch at the start — only re-asserts
-    it after the packages that might have replaced it.
+    install_python_deps).
     """
     python_exe = str(VENV_DIR / "Scripts" / "python.exe")
     pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
@@ -740,11 +732,9 @@ def install_embedding_backend() -> bool:
         return False
     print_status("sentence-transformers installed")
 
-    # Dependency resolution above may have swapped the CPU torch for a PyPI build.
     if not _reassert_torch_cpu():
         return False
 
-    # Verify with the venv interpreter (full path — activation is not required).
     verify_script = (
         "import sys, os\n"
         "os.environ['CUDA_VISIBLE_DEVICES'] = ''\n"
@@ -758,11 +748,9 @@ def install_embedding_backend() -> bool:
         "except Exception as e:\n"
         "    print(f'FAILED: {e}')\n"
         "    print(f'python: {sys.executable}')\n"
-        "    print(f'sys.path[0]: {sys.path[0] if sys.path else \"\"}')\n"
         "    try:\n"
         "        import importlib.util\n"
-        "        spec = importlib.util.find_spec('torch')\n"
-        "        print(f'torch spec: {spec}')\n"
+        "        print(f'torch spec: {importlib.util.find_spec(\"torch\")}')\n"
         "    except Exception as e2:\n"
         "        print(f'torch spec error: {e2}')\n"
         "    sys.exit(1)\n"
@@ -779,15 +767,13 @@ def install_embedding_backend() -> bool:
             timeout=120,
         )
         verify_path.unlink(missing_ok=True)
-
         out = (verify_result.stdout or "") + (verify_result.stderr or "")
         if verify_result.returncode == 0 and "SUCCESS" in out:
             print_status("Embedding backend verified")
             return True
-        else:
-            print_status("Embedding backend verification failed", False)
-            print(f"Output: {out.strip()}")
-            return False
+        print_status("Embedding backend verification failed", False)
+        print(f"Output: {out.strip()}")
+        return False
     except Exception as e:
         print_status(f"Verification error: {e}", False)
         return False
@@ -835,9 +821,7 @@ def install_python_deps(backend: str, skip_if_present: bool = False) -> bool:
 
         all_requirements = get_dynamic_requirements()
 
-        # CPU torch MUST be present before BASE_REQ. kokoro (and any other
-        # package that depends on torch) will otherwise pull the default PyPI
-        # Windows wheel, which is not the +cpu build and later breaks imports.
+        # CPU torch MUST be present before BASE_REQ (kokoro depends on torch).
         if not install_torch_cpu():
             return False
 
@@ -856,7 +840,6 @@ def install_python_deps(backend: str, skip_if_present: bool = False) -> bool:
 
         print_status("Base packages installed")
 
-        # transformers + sentence-transformers, then re-assert CPU torch, verify
         if not install_embedding_backend():
             return False
 
@@ -977,11 +960,21 @@ def create_system_ini(os_version, python_version,
                       backend_type, embedding_model,
                       windows_version=None, vulkan_available=False,
                       llama_cli_path=None, llama_bin_path=None,
-                      tts_engine="kokoro", 
+                      tts_engine="kokoro",
                       tts_pack=1, tts_default_voice_id=None,
                       tts_default_voice_name=None, tts_enabled_voices=None,
                       browser_acceleration=True,
-                      dx_feature_level=0):
+                      dx_feature_level=0,
+                      install_method=None,
+                      backend_key=None,
+                      llama_wheel_vulkan=None):
+    """Write data/constants.ini with system, TTS, and last-install metadata.
+
+    install_method / backend_key / llama_wheel_vulkan are recorded under
+    [install] so later Check/Install and Check/Recompile Binaries runs can
+    skip work that is already correct.
+    """
+    from datetime import datetime as _dt
     system_ini_path = BASE_DIR / "data" / "constants.ini"
     try:
         with open(system_ini_path, "w", encoding='utf-8') as f:
@@ -1003,6 +996,8 @@ def create_system_ini(os_version, python_version,
                 f.write(f"llama_bin_path = {llama_bin_path}\n")
             if windows_version:
                 f.write(f"windows_version = {windows_version}\n")
+            if _INSTALLED_LLAMA_WHEEL_VERSION:
+                f.write(f"llama_wheel_version = {_INSTALLED_LLAMA_WHEEL_VERSION}\n")
 
             f.write("\n[tts]\n")
             f.write(f"tts_type = {tts_engine}\n")
@@ -1012,11 +1007,22 @@ def create_system_ini(os_version, python_version,
             if tts_enabled_voices:
                 f.write(f"tts_enabled_voices = {','.join(tts_enabled_voices)}\n")
             else:
-                # fallback: all voices from all packs
                 all_ids = []
                 for pack in KOKORO_VOICE_PACKS.values():
                     all_ids.extend(pack["voice_ids"])
                 f.write(f"tts_enabled_voices = {','.join(all_ids)}\n")
+
+            # Last successful install notation — used by options 2/3 to decide
+            # whether a wheel/binary already matches the selected backend.
+            f.write("\n[install]\n")
+            f.write(f"last_success = {_dt.now().isoformat(timespec='seconds')}\n")
+            f.write(f"last_method = {install_method or 'unknown'}\n")
+            f.write(f"backend_key = {backend_key or ''}\n")
+            f.write(f"backend_type = {backend_type}\n")
+            if _INSTALLED_LLAMA_WHEEL_VERSION:
+                f.write(f"llama_wheel_version = {_INSTALLED_LLAMA_WHEEL_VERSION}\n")
+            if llama_wheel_vulkan is not None:
+                f.write(f"llama_wheel_vulkan = {str(bool(llama_wheel_vulkan)).lower()}\n")
 
         print_status("System information file created")
         return True
@@ -1466,16 +1472,18 @@ def show_main_menu() -> str:
     print()
     print("-" * width)
     print()
-    print("   1. Clean Install (Purge First)")
+    print("   1. Clean/Purge Install All")
     print()
-    print("   2. Check/Install (Fix Missing Packages/Libraries)")
+    print("   2. Check/Install Python/Libraries")
     print()
-    print("   3. Refresh Configs (Only Remake Ini/Json)")
+    print("   3. Check/Recompile Binaries")
+    print()
+    print("   4. Refresh Configs/Inis")
     print()
     print()
     print("=" * width)
 
-    return _get_menu_choice(3, "Selection; Menu Options = 1-3, Abandon Install = A: ")
+    return _get_menu_choice(4, "Selection; Menu Options = 1-4, Abandon Install = A: ")
 
 
 def show_embedding_menu() -> str:
@@ -1635,7 +1643,7 @@ if os.path.exists(locks_dir):
 
 os.environ["HF_HOME"]                       = r"{hf_cache}"
 os.environ["HUGGINGFACE_HUB_CACHE"]         = r"{hf_cache}"
-os.environ["CUDA_VISIBLE_DEVICES"]          = " "
+os.environ["CUDA_VISIBLE_DEVICES"]          = ""
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"  # Enable progress to verify it's not hanging
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_VERBOSITY"]             = "info" # Show info/warnings (e.g., unauthenticated rate limits)
@@ -1685,16 +1693,41 @@ if failed_voices:
     print(f"[TTS] {{len(failed_voices)}} voice(s) failed: {{failed_voices}}", flush=True)
     sys.exit(1)
 
-# ── Phase 3: warm-up / verify ───────────────────────────────────────
-print("[TTS] Phase 3/3 — Verifying Kokoro pipeline (warm-up)...", flush=True)
+# ── Phase 3: ensure package + warm-up ───────────────────────────────
+# Models/voices are already on disk. Ensure the *package* is importable in
+# this venv (Check/Install can leave it missing after a partial prior run),
+# then optionally warm up KPipeline. Package missing is fatal; warm-up
+# failure after a successful import is a warning only (weights are ready).
+print("[TTS] Phase 3/3 — Ensuring kokoro package + pipeline warm-up...", flush=True)
+print(f"[TTS] python={sys.executable}", flush=True)
+
+try:
+    import kokoro  # noqa: F401
+except ImportError:
+    print("[TTS] kokoro package not found — installing into this venv...", flush=True)
+    import subprocess as _sp
+    r = _sp.run(
+        [sys.executable, "-m", "pip", "install", "kokoro>=0.9.4", "--upgrade-strategy", "only-if-needed"],
+        capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        print(f"[TTS] ERROR: pip install kokoro failed:\n{r.stdout}\n{r.stderr}", flush=True)
+        sys.exit(1)
+    try:
+        import kokoro  # noqa: F401
+    except ImportError as e:
+        print(f"[TTS] ERROR: kokoro still not importable after pip install: {e}", flush=True)
+        sys.exit(1)
+    print("[TTS] kokoro package installed.", flush=True)
+
 try:
     from kokoro import KPipeline
     pipeline = KPipeline(lang_code=LANG_CODE, repo_id=REPO_ID)
     print("[TTS] KPipeline created successfully — Kokoro is ready.", flush=True)
 except Exception as e:
-    print(f"[TTS] ERROR during pipeline warm-up: {{e}}", flush=True)
+    # Weights + voices are already downloaded; runtime can still work.
+    print(f"[TTS] WARNING: pipeline warm-up failed (models are on disk): {e}", flush=True)
     traceback.print_exc()
-    sys.exit(1)
 
 print("[TTS] All phases complete.", flush=True)
 sys.exit(0)
@@ -2023,99 +2056,197 @@ def refresh_configs():
 # MAIN ENTRY POINT
 # =============================================================================
 
-def run_installer():
-    """Main installer flow with new menu structure."""
 
-    if not check_version_compatibility():
-        print("\nSystem requirements not met. Installation cannot continue.")
-        return
+def _read_install_record() -> dict:
+    """Read [install] + relevant [system] fields from constants.ini if present."""
+    import configparser as _cp
+    ini_path = BASE_DIR / "data" / "constants.ini"
+    out = {}
+    if not ini_path.exists():
+        return out
+    try:
+        cfg = _cp.ConfigParser()
+        cfg.read(ini_path, encoding='utf-8')
+        if 'system' in cfg:
+            for k in ('backend_type', 'embedding_model', 'llama_cli_path',
+                      'llama_bin_path', 'llama_wheel_version'):
+                if k in cfg['system']:
+                    out[k] = cfg['system'].get(k)
+        if 'install' in cfg:
+            for k, v in cfg['install'].items():
+                out[k] = v
+        if 'tts' in cfg:
+            out['tts_pack'] = cfg['tts'].get('tts_pack')
+            out['tts_default_voice_id'] = cfg['tts'].get('tts_default_voice_id')
+            out['tts_enabled_voices'] = cfg['tts'].get('tts_enabled_voices', '')
+    except Exception as e:
+        print(f"[INI] Could not read install record: {e}")
+    return out
 
-    # Run detections early (needed for main menu display)
-    run_detections_once()
-    detect_windows_version()
 
-    # ── Menu 1: Main Menu ──────────────────────────────────────────────
-    main_choice = show_main_menu()
-    if main_choice == 'A':
-        print("\nInstallation abandoned.")
-        return
+def _binary_dir_looks_vulkan(bin_dir: Path) -> bool | None:
+    """Return True if dir contains Vulkan llama bits, False if CPU-only, None if empty/missing."""
+    if not bin_dir.is_dir():
+        return None
+    names = [p.name.lower() for p in bin_dir.iterdir() if p.is_file()]
+    if not names:
+        return None
+    has_cli = any(n == 'llama-cli.exe' or n.startswith('llama-cli') for n in names)
+    if not has_cli:
+        return None
+    # ggml-vulkan / vulkan DLLs indicate a Vulkan build
+    vk_markers = ('ggml-vulkan', 'vulkan-1', 'libvulkan')
+    if any(any(m in n for m in vk_markers) for n in names):
+        return True
+    return False
 
-    if main_choice == '3':
-        refresh_configs()
-        return
 
-    is_clean_install = (main_choice == '1')
+def _ensure_prebuilt_binary(backend: str) -> bool:
+    """Download and extract a prebuilt llama.cpp zip when BACKEND_OPTIONS provides a URL."""
+    info = BACKEND_OPTIONS[backend]
+    url = info.get('url')
+    dest = info.get('dest')
+    if not url or not dest:
+        return True  # nothing to download for this backend
 
-    # ── Menu 2: Embedding Model ────────────────────────────────────────
-    embed_choice = show_embedding_menu()
-    if embed_choice == 'A':
-        print("\nInstallation abandoned.")
-        return
-    embedding_model = EMBEDDING_MODELS[embed_choice]["name"]
+    dest_path = BASE_DIR / dest
+    cli = BASE_DIR / (info.get('cli_path') or '')
+    want_vulkan = 'vulkan' in backend.lower() or bool(info.get('vulkan_required'))
 
-    # ── Menu 3: Backend ────────────────────────────────────────────────
-    backend_choice = show_backend_menu()
-    if backend_choice == 'A':
-        print("\nInstallation abandoned.")
-        return
-    backend_keys = list(BACKEND_OPTIONS.keys())
-    backend = backend_keys[int(backend_choice) - 1]
+    existing = _binary_dir_looks_vulkan(dest_path)
+    if cli.is_file() and existing is not None:
+        if want_vulkan and existing is True:
+            print_status(f"Prebuilt Vulkan binary already present: {dest}")
+            return True
+        if not want_vulkan and existing is False:
+            print_status(f"Prebuilt CPU binary already present: {dest}")
+            return True
+        print_status(f"Existing binary at {dest} does not match required type — re-downloading")
+        _force_rmtree(dest_path)
 
-    # ── Menu 4: TTS Voice Pack ─────────────────────────────────────────
-    tts_choice = show_tts_menu()
-    if tts_choice == 'A':
-        print("\nInstallation abandoned.")
-        return
-    voice_pack = KOKORO_VOICE_PACKS[tts_choice]
+    print_status(f"Downloading prebuilt binary: {url}")
+    try:
+        import urllib.request
+        dest_path.mkdir(parents=True, exist_ok=True)
+        zip_path = TEMP_DIR / "llama_prebuilt.zip"
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        urllib.request.urlretrieve(url, str(zip_path))
+        import zipfile
+        with zipfile.ZipFile(str(zip_path), 'r') as zf:
+            zf.extractall(str(dest_path))
+        zip_path.unlink(missing_ok=True)
+        # Some zips nest a single top-level folder — flatten if so
+        children = list(dest_path.iterdir())
+        if len(children) == 1 and children[0].is_dir():
+            nested = children[0]
+            for item in nested.iterdir():
+                target = dest_path / item.name
+                if target.exists():
+                    if target.is_dir():
+                        _force_rmtree(target)
+                    else:
+                        target.unlink()
+                item.rename(target)
+            nested.rmdir()
+        if not (BASE_DIR / info['cli_path']).is_file():
+            # Accept llama-cli.exe anywhere under dest
+            found = list(dest_path.rglob('llama-cli.exe'))
+            if found:
+                print_status(f"Found llama-cli.exe at {found[0].relative_to(BASE_DIR)}")
+            else:
+                print_status("Downloaded archive but llama-cli.exe not found", False)
+                return False
+        print_status(f"Prebuilt binary installed to {dest}")
+        return True
+    except Exception as e:
+        print_status(f"Prebuilt binary download failed: {e}", False)
+        return False
 
-    # ── Execute Installation ───────────────────────────────────────────
-    clear_screen()
-    print_header("Installing...")
-    if is_clean_install:
-        print_status("Starting Clean Install...")
-        if VENV_DIR.exists():
-            _force_rmtree(VENV_DIR)
-            print_status("Removed existing virtual environment")
-    else:
-        print_status("Starting Check/Install...")
 
-    # Create directories
-    create_files_and_directories(backend)
+def _ensure_llama_wheel_for_backend(backend: str, force: bool = False) -> bool:
+    """Ensure llama-cpp-python wheel matches the backend (CPU vs Vulkan).
 
-    # Create/ensure venv
-    if is_clean_install:
-        if not create_venv():
-            return
-    else:
-        if not ensure_venv():
-             return
+    force=True always rebuilds/reinstalls. force=False skips when an existing
+    wheel already matches the required Vulkan/CPU kind.
+    """
+    global _INSTALLED_LLAMA_WHEEL_VERSION
+    info = BACKEND_OPTIONS[backend]
+    pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
+    needs_vulkan = bool(info.get("build_flags", {}).get("GGML_VULKAN")) or (
+        info.get("vulkan_required") and info.get("compile_wheel")
+    )
+    # Compile path only when the menu entry requests a compiled wheel
+    compile_wheel = bool(info.get("compile_wheel"))
 
-    # Install Python dependencies (includes llama-cpp-python wheel) - NOW FATAL
-    # Check/Install reuses an existing matching llama-cpp-python wheel.
-    if not install_python_deps(backend, skip_if_present=not is_clean_install):
-        print_status("Python dependency installation failed. Installation aborted.", False)
-        return
+    existing = get_installed_llama_info()
+    if existing and not force:
+        if existing["vulkan"] == needs_vulkan or (not compile_wheel and not needs_vulkan and not existing["vulkan"]):
+            # For prebuilt CPU wheel backends, any non-vulkan wheel is fine
+            if not compile_wheel and not needs_vulkan and not existing["vulkan"]:
+                print_status(f"llama-cpp-python {existing['version']} (CPU) already matches — skipping")
+                _INSTALLED_LLAMA_WHEEL_VERSION = f"v{existing['version']}"
+                return True
+            if compile_wheel and existing["vulkan"] == needs_vulkan:
+                kind = "Vulkan" if needs_vulkan else "CPU"
+                print_status(f"llama-cpp-python {existing['version']} ({kind}) already matches — skipping")
+                _INSTALLED_LLAMA_WHEEL_VERSION = f"v{existing['version']}"
+                return True
 
-    # Install optional file format support - NOW FATAL
-    if not install_optional_file_support():
-        print_status("Optional file support installation failed. Installation aborted.", False)
-        return
+    if not compile_wheel:
+        # Prebuilt CPU wheel path (same as install_python_deps branch)
+        wheel_version = LLAMACPP_PYTHON_PREBUILT_VERSION.lstrip("v")
+        if existing and existing["version"] == wheel_version and not existing["vulkan"] and not force:
+            _INSTALLED_LLAMA_WHEEL_VERSION = f"v{wheel_version}"
+            print_status(f"llama-cpp-python {wheel_version} (CPU) already installed — skipping")
+            return True
+        sources = _get_prebuilt_wheel_urls()
+        if not sources:
+            print_status("No pre-built wheel sources available.", False)
+            return False
+        print_status(f"Installing llama-cpp-python {wheel_version} (CPU)...")
+        installed = False
+        for src in sources:
+            label = src.get("label", src["value"])
+            print(f"  Trying: {label}")
+            if src["type"] == "url":
+                installed = pip_install_with_retry(pip_exe, src["value"], max_retries=2, initial_delay=3.0)
+            elif src["type"] == "pypi":
+                installed = pip_install_with_retry(
+                    pip_exe, src["value"],
+                    extra_args=["--prefer-binary"],
+                    max_retries=3, initial_delay=5.0,
+                )
+            if installed:
+                print_status(f"llama-cpp-python {wheel_version} installed via {label}")
+                _INSTALLED_LLAMA_WHEEL_VERSION = f"v{wheel_version}"
+                break
+            print(f"  Source unavailable: {label}")
+        if not installed:
+            print_status(f"llama-cpp-python {wheel_version} could not be installed.", False)
+            return False
+        return True
 
-    # Download embedding model to cache - NOW FATAL
-    if not download_embedding_model(embedding_model):
-         print_status("Embedding model download failed. Installation aborted.", False)
-         return
+    # Compile path
+    build_flags = info.get("build_flags", {})
+    if build_flags.get("GGML_VULKAN") and not check_vulkan_sdk_installed():
+        print_status("Error: Vulkan SDK not found (required for Vulkan wheel)", False)
+        return False
+    if not check_vcredist_windows():
+        print_status("Warning: Visual C++ Redistributable (x64) not detected", False)
+        time.sleep(2)
+    if not build_llama_cpp_python_with_flags(build_flags):
+        return False
+    _INSTALLED_LLAMA_WHEEL_VERSION = LLAMACPP_PYTHON_VERSION
+    return True
 
-    # Download Kokoro TTS model + voices for selected pack - NOW FATAL
-    if not download_kokoro_voices(tts_choice):
-        print_status("Kokoro TTS download failed. Installation aborted.", False)
-        return
 
-    # ── Create configuration files (Only reached if ALL above steps succeeded) ─
+def _finalize_configs(backend: str, embedding_model: str, tts_choice: str,
+                      voice_pack: dict, install_method: str) -> None:
+    """Write constants.ini + JSON configs after a successful install step."""
     info = BACKEND_OPTIONS[backend]
     backend_type = _determine_backend_type(backend)
-    info = BACKEND_OPTIONS[backend]
-    backend_type = _determine_backend_type(backend)
+    wheel_info = get_installed_llama_info()
+    llama_wheel_vulkan = bool(wheel_info and wheel_info.get("vulkan"))
 
     create_system_ini(
         os_version=f"Windows {WINDOWS_VERSION}" if WINDOWS_VERSION else "unknown",
@@ -2126,20 +2257,144 @@ def run_installer():
         llama_cli_path=info.get("cli_path"),
         llama_bin_path=info.get("dest"),
         tts_engine="kokoro",
-        tts_pack=int(tts_choice),
-        tts_default_voice_id=voice_pack["default_voice_id"],
-        tts_default_voice_name=voice_pack["default_voice_name"],
-        tts_enabled_voices=voice_pack["voice_ids"],
+        tts_pack=int(tts_choice) if str(tts_choice).isdigit() else 1,
+        tts_default_voice_id=voice_pack.get("default_voice_id") if voice_pack else None,
+        tts_default_voice_name=voice_pack.get("default_voice_name") if voice_pack else None,
+        tts_enabled_voices=voice_pack.get("voice_ids") if voice_pack else None,
         browser_acceleration=_DETECTED_DX_CAPABLE,
         dx_feature_level=_DETECTED_DX_LEVEL,
+        install_method=install_method,
+        backend_key=backend,
+        llama_wheel_vulkan=llama_wheel_vulkan,
     )
-
-    # Patch wheel version into INI (written by install_python_deps)
     if _INSTALLED_LLAMA_WHEEL_VERSION:
         update_ini_wheel_version(_INSTALLED_LLAMA_WHEEL_VERSION)
-
-    # Create configuration.json and preferences.json (existing values preserved)
     create_config_jsons()
+
+
+def run_installer():
+    """Main installer flow with 4-option menu.
+
+    1. Clean/Purge Install All     — wipe venv, install libraries + binaries + models
+    2. Check/Install Python/Libraries — packages, embedding, TTS (reuse matching wheel)
+    3. Check/Recompile Binaries    — wheel + prebuilt bin only; skip library reinstall
+    4. Refresh Configs/Inis        — rewrite constants.ini / JSON from existing state
+    """
+
+    if not check_version_compatibility():
+        print("\nSystem requirements not met. Installation cannot continue.")
+        return
+
+    run_detections_once()
+    detect_windows_version()
+
+    main_choice = show_main_menu()
+    if main_choice == 'A':
+        print("\nInstallation abandoned.")
+        return
+
+    # ── 4. Refresh configs only ──────────────────────────────────────────
+    if main_choice == '4':
+        refresh_configs()
+        return
+
+    is_clean = (main_choice == '1')
+    libraries_only = (main_choice == '2')
+    binaries_only = (main_choice == '3')
+
+    # Shared menus (backend always needed; embed/TTS for full & library paths)
+    record = _read_install_record()
+
+    # Backend selection (always)
+    backend_choice = show_backend_menu()
+    if backend_choice == 'A':
+        print("\nInstallation abandoned.")
+        return
+    backend_keys = list(BACKEND_OPTIONS.keys())
+    backend = backend_keys[int(backend_choice) - 1]
+
+    embedding_model = record.get('embedding_model') or EMBEDDING_MODELS['1']['name']
+    tts_choice = record.get('tts_pack') or '1'
+    voice_pack = KOKORO_VOICE_PACKS.get(str(tts_choice), KOKORO_VOICE_PACKS['1'])
+
+    if not binaries_only:
+        embed_choice = show_embedding_menu()
+        if embed_choice == 'A':
+            print("\nInstallation abandoned.")
+            return
+        embedding_model = EMBEDDING_MODELS[embed_choice]['name']
+
+        tts_choice = show_tts_menu()
+        if tts_choice == 'A':
+            print("\nInstallation abandoned.")
+            return
+        voice_pack = KOKORO_VOICE_PACKS[tts_choice]
+
+    # ── Execute ──────────────────────────────────────────────────────────
+    clear_screen()
+    print_header("Installing...")
+
+    if is_clean:
+        print_status("Starting Clean/Purge Install All...")
+        if VENV_DIR.exists():
+            _force_rmtree(VENV_DIR)
+            print_status("Removed existing virtual environment")
+    elif libraries_only:
+        print_status("Starting Check/Install Python/Libraries...")
+    else:
+        print_status("Starting Check/Recompile Binaries...")
+
+    create_files_and_directories(backend)
+
+    if is_clean:
+        if not create_venv():
+            return
+    else:
+        if not ensure_venv():
+            return
+
+    # ── Option 3: binaries only ──────────────────────────────────────────
+    if binaries_only:
+        if not _ensure_prebuilt_binary(backend):
+            print_status("Binary setup failed. Installation aborted.", False)
+            return
+        if not _ensure_llama_wheel_for_backend(backend, force=False):
+            print_status("llama-cpp-python setup failed. Installation aborted.", False)
+            return
+        _finalize_configs(backend, embedding_model, str(tts_choice), voice_pack, "binaries")
+        print()
+        print("=" * (shutil.get_terminal_size().columns - 1))
+        print_status("Binary check/recompile complete!")
+        print("=" * (shutil.get_terminal_size().columns - 1))
+        print()
+        return
+
+    # ── Options 1 & 2: Python libraries (+ binaries on clean) ────────────
+    # install_python_deps already installs the matching wheel; on Check/Install
+    # it skips when the existing wheel matches.
+    if not install_python_deps(backend, skip_if_present=not is_clean):
+        print_status("Python dependency installation failed. Installation aborted.", False)
+        return
+
+    if not install_optional_file_support():
+        print_status("Optional file support installation failed. Installation aborted.", False)
+        return
+
+    if not download_embedding_model(embedding_model):
+        print_status("Embedding model download failed. Installation aborted.", False)
+        return
+
+    if not download_kokoro_voices(tts_choice):
+        print_status("Kokoro TTS download failed. Installation aborted.", False)
+        return
+
+    # Prebuilt standalone binary (when the selected backend has a URL)
+    if not _ensure_prebuilt_binary(backend):
+        print_status("Binary setup failed. Installation aborted.", False)
+        return
+
+    method = "clean" if is_clean else "libraries"
+    _finalize_configs(backend, embedding_model, str(tts_choice), voice_pack, method)
 
     print()
     print("=" * (shutil.get_terminal_size().columns - 1))
@@ -2148,6 +2403,7 @@ def run_installer():
     print()
     print("  You can now run the application using the launcher.")
     print()
+
 
 
 if __name__ == "__main__":
