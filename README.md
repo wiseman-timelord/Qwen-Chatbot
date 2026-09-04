@@ -1,4 +1,4 @@
-# Qwen-Chatbot (formerly known as Qwen-Windows-Gguf)
+# Qwen-Chatbot (formerly Qwen-Windows-Gguf)
 Status - Beta; needs more testing, and a little more work on Output format. 
 
 ## Description
