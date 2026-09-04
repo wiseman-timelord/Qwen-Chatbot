@@ -95,11 +95,14 @@ MODEL_NAME = "Select_a_model..."
 GPU_LAYERS = 0
 SELECTED_GPU = None
 
-# One-Shot session management
-# ONE_SHOT_PENDING_NEW_SESSION: set True when user clicks "Start New Session"
-# while in One-Shot mode. Cleared once a new response completes or user loads
-# an existing session. Drives the "⏳ New Session..." placeholder slot in the
-# history panel so the user knows a new session is in progress.
+# Pending-new-session management (both Mem-Lock and One-Shot)
+# ONE_SHOT_PENDING_NEW_SESSION: set True when user clicks "Start New Session".
+# Drives a temporary "..Starting New Session.." placeholder as the first slot
+# in the history panel. Cleared (and the placeholder removed) when:
+#   • the first complete response is saved and labelled, or
+#   • the user clicks an existing session slot (discards the pending new session),
+#   • the program exits (SESSION_ACTIVE is False, so nothing is written to disk).
+# Name retained for compatibility with existing call sites.
 ONE_SHOT_PENDING_NEW_SESSION = False
 # ONE_SHOT_LOADING: mutex flag - True while load_models() is executing inside
 # conversation_display() for a One-Shot new-session request. Prevents a second

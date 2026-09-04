@@ -224,7 +224,14 @@ class WebSearchEngine:
         return results
 
     def _fetch_page_content(self, url: str, timeout: int = 10) -> Optional[str]:
-        """Fetch and extract main content from a web page."""
+        """Fetch and extract main content from a web page.
+
+        Soft-fails on anti-bot walls (PerimeterX, Cloudflare, DataDome, etc.).
+        Tries newspaper4k first, then a lightweight requests+BS4 fallback.
+        Returns None on any hard failure so the caller can fall back to the
+        search-result snippet instead of aborting the whole search.
+        """
+        # ── Method 1: newspaper4k (best extraction when it works) ────────────
         try:
             from newspaper import Article
 
@@ -236,14 +243,61 @@ class WebSearchEngine:
                 content = article.text[:4000]
                 if len(article.text) > 4000:
                     content += "\n[...content truncated...]"
-
                 if article.publish_date:
                     content = f"[Published: {article.publish_date.strftime('%Y-%m-%d')}]\n{content}"
-
                 return content
-
         except Exception as e:
-            print(f"[WEB-SEARCH] Failed to fetch {url}: {e}")
+            err = str(e).lower()
+            anti_bot = any(x in err for x in (
+                "perimeterx", "cloudflare", "datadome", "akamai", "captcha",
+                "access denied", "403", "429", "blocked", "bot", "protected",
+                "challenge", "human security",
+            ))
+            if anti_bot:
+                print(f"[WEB-SEARCH] Anti-bot wall on {url} — will use snippet only")
+            else:
+                print(f"[WEB-SEARCH] newspaper failed for {url}: {e}")
+
+        # ── Method 2: requests + BeautifulSoup (lighter, often passes simple blocks) ──
+        try:
+            import requests
+            from bs4 import BeautifulSoup
+
+            headers = {
+                "User-Agent": self._get_user_agent(),
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+                "Referer": "https://www.google.com/",
+                "DNT": "1",
+            }
+            resp = requests.get(url, headers=headers, timeout=timeout, allow_redirects=True)
+            if resp.status_code != 200:
+                print(f"[WEB-SEARCH] HTTP {resp.status_code} for {url}")
+                return None
+
+            soup = BeautifulSoup(resp.text, "lxml")
+            for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
+                tag.decompose()
+
+            # Prefer <article> / main content containers
+            main = (
+                soup.find("article")
+                or soup.find("main")
+                or soup.find(attrs={"role": "main"})
+                or soup.find("div", class_=re.compile(r"(article|content|story|post)", re.I))
+            )
+            text = (main or soup.body or soup).get_text(separator="\n", strip=True)
+            # Collapse excessive whitespace
+            text = re.sub(r"\n{3,}", "\n\n", text)
+            text = re.sub(r"[ \t]+", " ", text)
+
+            if text and len(text) > 150:
+                content = text[:4000]
+                if len(text) > 4000:
+                    content += "\n[...content truncated...]"
+                return content
+        except Exception as e:
+            print(f"[WEB-SEARCH] Fallback fetch failed for {url}: {e}")
 
         return None
 

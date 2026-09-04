@@ -793,7 +793,13 @@ def handle_unload_model(llm_state, models_loaded_state):
 
 
 def start_new_session(session_messages, attached_files, llm_state, models_loaded_state):
-    """Start a fresh session. Preserves model loaded state to prevent unnecessary reloads."""
+    """Start a fresh session. Preserves model loaded state to prevent unnecessary reloads.
+
+    Immediately shows a temporary "..Starting New Session.." placeholder in the
+    left history panel. The placeholder is discarded (never written to disk) if
+    the user clicks another session slot or exits before the first complete
+    response. After a full response it is replaced by the real labelled slot.
+    """
     if cfg.SESSION_ACTIVE and session_messages:
         try:
             save_session_history(session_messages, attached_files)
@@ -806,17 +812,12 @@ def start_new_session(session_messages, attached_files, llm_state, models_loaded
     cfg.session_label = ""
     cfg.session_attached_files = []
 
-    # In One-Shot mode the model was unloaded after the last response, so both
-    # cfg.llm and the Gradio llm_state are already None/False. Signal that a
-    # new session is pending so:
-    #   • update_session_buttons() can show a "⏳ New Session..." placeholder
-    #     at the top of the history panel immediately.
-    #   • If the user clicks an existing session instead, that handler clears
-    #     this flag and the placeholder disappears.
-    if cfg.LOADING_MODE == "One-Shot":
-        cfg.ONE_SHOT_PENDING_NEW_SESSION = True
-        cfg.ONE_SHOT_LOADING = False  # reset any stale load guard
-        print("[ONE-SHOT] New session pending — placeholder shown in history panel")
+    # Always show the pending placeholder so the left panel updates immediately
+    # in both Mem-Lock and One-Shot modes. Nothing is written to disk until the
+    # first complete response (SESSION_ACTIVE stays False until then).
+    cfg.ONE_SHOT_PENDING_NEW_SESSION = True
+    cfg.ONE_SHOT_LOADING = False  # reset any stale load guard
+    print("[SESSION] New session pending — placeholder shown in history panel")
 
     chatbot_output = get_chatbot_output([], [])
     return (
@@ -827,20 +828,20 @@ def start_new_session(session_messages, attached_files, llm_state, models_loaded
 
 
 def load_session_by_index(idx):
-    # If a One-Shot new-session placeholder is showing, slot 0 is the placeholder
+    # If a pending-new-session placeholder is showing, slot 0 is the placeholder
     # (not a real session).  Clicking it is a no-op; clicking any other slot
-    # should clear the pending flag and load the shifted real session.
+    # discards the pending session (never saved) and loads the shifted real one.
     pending = getattr(cfg, 'ONE_SHOT_PENDING_NEW_SESSION', False)
     if pending:
         if idx == 0:
-            # Placeholder slot clicked — ignore
+            # Placeholder slot clicked — ignore; keep pending state
             chatbot_output = get_chatbot_output([], [])
             return (chatbot_output, [], [], "New session in progress — send a message to begin.", False) + tuple(update_action_buttons("waiting_for_input", False))
-        # Real session slot: compensate for the one-slot shift
+        # Real session slot: compensate for the one-slot shift and discard pending
         real_idx = idx - 1
         cfg.ONE_SHOT_PENDING_NEW_SESSION = False
         cfg.ONE_SHOT_LOADING = False
-        print("[ONE-SHOT] Pending new session cancelled — loading existing session")
+        print("[SESSION] Pending new session discarded — loading existing session")
     else:
         real_idx = idx
 
@@ -1087,12 +1088,11 @@ def handle_inline_retry(action_str, session_messages):
 def update_session_buttons():
     """Update session history buttons.
 
-    When ONE_SHOT_PENDING_NEW_SESSION is True a "⏳ New Session..." placeholder
-    is injected as the first visible slot so the user can see that a new session
-    is in progress. It is styled as a disabled slot (value starts with ⏳) and
-    is replaced by the real session label once the first response completes.
-    If the user clicks an existing session slot instead, the flag is cleared and
-    the placeholder disappears on the next button refresh.
+    When ONE_SHOT_PENDING_NEW_SESSION is True a temporary
+    "..Starting New Session.." placeholder is injected as the first visible
+    slot. It is never written to disk. It is replaced by the real spaCy-labelled
+    session once the first complete response is saved, or removed if the user
+    clicks another session slot (or exits) before that.
     """
     sessions = get_saved_sessions()[:cfg.MAX_HISTORY_SLOTS]
     button_updates = []
@@ -1102,8 +1102,8 @@ def update_session_buttons():
     pending = getattr(cfg, 'ONE_SHOT_PENDING_NEW_SESSION', False)
     effective_max = cfg.MAX_HISTORY_SLOTS
     if pending:
-        # Slot 0 — placeholder (non-interactive label; user cannot load it)
-        button_updates.append(gr.update(value="⏳ New Session...", visible=True))
+        # Slot 0 — placeholder (not a real file; discarded if never completed)
+        button_updates.append(gr.update(value="..Starting New Session..", visible=True))
         effective_sessions = sessions[: effective_max - 1]
         slot_offset = 1
     else:
@@ -1236,95 +1236,72 @@ def build_progress_html(step: int, web_search_enabled: bool = False, auto_tts_en
 
 
 def extract_search_query(user_input: str) -> str:
-    """Extract a clean, focused search query from natural language user input."""
-    original = user_input.strip()
-    working = original
+    """Extract a clean, focused search query from natural language user input.
 
+    Conservative approach: strip only clear instructional boilerplate and
+    keep the core topic + any date the user supplied. Over-aggressive
+    regex previously truncated useful queries (e.g. date + topic).
+    """
+    original = user_input.strip()
+    query = original
+
+    # Strip common instructional prefixes (applied once, order matters)
     leading_patterns = [
-        r'^produce\s+(?:a\s+)?web\s+(?:research|search)\b\s*(?:and\s+compile\s+(?:a\s+)?(?:report|timeline|summary)\s*)?,?\s*(?:upon|on|about|for|regarding|into|relating\s+to)?\s*(?:recent\s+events?\s*(?:relating\s+to|regarding|about|on|in|concerning)?\s*)?',
-        r'^compile\s+(?:a\s+)?(?:report|timeline|summary|analysis)\s*,?\s*',
-        r'^i\s+want\s+a\s+(?:timeline|report|summary|list)\s+of\s+(?:the\s+)?events?\s+(?:from\s+)?(?:the\s+)?(?:most\s+recent|last|past)\s+\d+\s+days?\s*(?:relating\s+to|about|on|in|regarding|concerning)?\s*',
-        r'^i\s+want\s+a\s+(?:timeline|report|summary|list)\s+of\s+(?:the\s+)?(?:events?\s+)?(?:from\s+|about\s+|on\s+|regarding\s+)?',
-        r'^(?:do|perform|run|conduct)\s+(?:a\s+)?web\s+(?:search|research)\s*(?:on|for|about|regarding|into|upon)?\s*(?:recent\s+events?\s*(?:relating\s+to|regarding|about|on|in)?\s*)?',
-        r'^search\s+(?:the\s+web\s+|online\s+)?(?:for|about|on|regarding|into)?\s*(?:recent\s+events?\s*(?:relating\s+to|regarding|about|on|in)?\s*)?',
-        r'^(?:find|look\s+up|look\s+for|get|fetch)\s+(?:(?:recent|latest|current|new)\s+)?(?:news|information|info|data|details|updates?|results?)?\s*(?:about|on|for|regarding|into)?\s*',
-        r'^research\s+(?:(?:the|recent|latest|current)\s+)?(?:events?\s+(?:about|on|in|regarding)?\s*)?',
-        r'^what\s+(?:are|is)\s+(?:the\s+)?(?:latest|recent|current|new)\s+(?:news|information|updates?|events?|developments?)\s+(?:about|on|regarding|in|concerning)\s+',
+        r'^(?:the\s+date\s+is\s+\d{4}[/-]\d{1,2}[/-]\d{1,2}\s*,?\s*)?(?:please\s+)?(?:find\s+out|search|look\s+up|research|tell\s+me|get)\s+(?:the\s+)?(?:latest|recent|current|new)?\s*(?:on|about|for|regarding)?\s*',
         r'^(?:can\s+you|could\s+you|would\s+you|will\s+you|please)?\s*(?:please\s+)?(?:search|find|look\s+up|research|google|check|investigate|tell\s+me\s+about)\s+(?:for\s+|about\s+|on\s+|into\s+)?',
+        r'^(?:do|perform|run|conduct)\s+(?:a\s+)?web\s+(?:search|research)\s*(?:on|for|about|regarding|into|upon)?\s*',
+        r'^search\s+(?:the\s+web\s+|online\s+)?(?:for|about|on|regarding|into)?\s*',
+        r'^(?:find|look\s+up|look\s+for|get|fetch)\s+(?:(?:recent|latest|current|new)\s+)?(?:news|information|info|data|details|updates?|results?)?\s*(?:about|on|for|regarding|into)?\s*',
+        r'^what\s+(?:are|is)\s+(?:the\s+)?(?:latest|recent|current|new)\s+(?:news|information|updates?|events?|developments?)\s+(?:about|on|regarding|in|concerning)\s+',
         r'^i\s+(?:want|need|would\s+like)\s+(?:(?:a\s+)?(?:report|timeline|summary|analysis)\s+(?:on|about|of|regarding)\s+|(?:to\s+know|information|info)\s+(?:about|on|regarding)\s+)?',
-        r'^i\s+want\s+a\s+timeline\s+of\s+(?:the\s+)?(?:events?\s+(?:from|in|about|on|regarding)?\s*)?',
-        r'^.*?(?:i\'?m?|i\s+am)\s+(?:developing|building|creating|working\s+on|testing)\s+(?:the|my|this)?\s*(?:internet\s+based\s+tools?|tools?|chatbot|ai|program|script|features?).*?(?:so\s+here|here)\s+(?:is|are|goes)\s*(?:a\s+)?(?:test|example).*?\n+',
         r'^(?:test|testing)[:\s-]+',
     ]
-
-    query = working
     for pattern in leading_patterns:
         candidate = re.sub(pattern, '', query, flags=re.IGNORECASE).strip()
-        if len(candidate) > 4:
+        if len(candidate) > 8:
             query = candidate
+            break
 
+    # Strip trailing instructions that are not part of the topic
     trailing_patterns = [
         r',?\s*(?:and\s+)?(?:then\s+)?(?:compile|create|write|produce|generate|build|format)\s+(?:a\s+)?(?:report|timeline|summary|analysis|list|overview|review)\b.*$',
+        r',?\s*(?:ensure\s+to\s+)?ONLY\s+cover\b.*$',
         r',?\s*(?:and\s+)?(?:then\s+)?(?:present|display|show|output)\s+(?:it|them|the\s+results?)\b.*$',
-        r',?\s*(?:for|over)\s+(?:the\s+)?(?:most\s+recent|last|past)\s+\d+\s+days?\b.*$',
-        r',?\s*from\s+the\s+current\s+date\b.*$',
         r'\s*if\s+(?:you\s+)?(?:cannot|can\'t|could\s+not)\b.*$',
         r'\s*if\s+that\s+fails\b.*$',
         r'\s*otherwise\b.*$',
         r'\s*alternatively\b.*$',
-        r'\s+in\s+which\s+case\b.*$',
     ]
     for pattern in trailing_patterns:
-        candidate2 = re.sub(pattern, '', query, flags=re.IGNORECASE | re.DOTALL).strip()
-        if len(candidate2) > 4:
-            query = candidate2
+        candidate = re.sub(pattern, '', query, flags=re.IGNORECASE | re.DOTALL).strip()
+        if len(candidate) > 8:
+            query = candidate
 
-    if re.search(r'[.!?]', query):
-        sentences = re.split(r'(?<=[.!?])\s+', query)
-        best_sentence, best_score = '', -1
-        topic_words = [
-            'iran', 'iraq', 'israel', 'syria', 'ukraine', 'russia', 'china',
-            'middle.?east', 'war', 'conflict', 'election', 'crisis', 'attack',
-            'ceasefire', 'nuclear', 'climate', 'economy', 'protest', 'uprising',
-        ]
-        meta_words = ['chatbot', 'test', 'testing', 'developing', 'tool', 'i am', "i'm"]
-        for sentence in sentences:
-            sentence = sentence.strip()
-            if len(sentence) < 10:
-                continue
-            score = 0
-            words = sentence.split()
-            for i, word in enumerate(words):
-                if i > 0 and word[0].isupper() and len(word) > 2:
-                    score += 3
-            if re.search(r'\b20\d\d\b', sentence):
-                score += 5
-            for tw in topic_words:
-                if re.search(tw, sentence, re.IGNORECASE):
-                    score += 4
-            for mw in meta_words:
-                if mw in sentence.lower():
-                    score -= 2
-            if score > best_score:
-                best_score, best_sentence = score, sentence
-        if best_score >= 0 and best_sentence:
-            query = best_sentence
+    # Keep an explicit date the user supplied (helps recency ranking)
+    date_match = re.search(r'\b(20\d{2}[/-]\d{1,2}[/-]\d{1,2}|20\d{2})\b', original)
+    date_prefix = date_match.group(0) if date_match else ""
 
     query = query.strip().strip('"\'').strip()
     query = re.sub(r'\s+', ' ', query)
     query = re.sub(r'[.!?]+$', '', query).strip()
 
+    # Prefer a short topical core when the cleaned string is still long
+    if len(query) > 100:
+        # Keep first ~90 chars on a word boundary, plus any date
+        core = query[:90].rsplit(' ', 1)[0]
+        if date_prefix and date_prefix not in core:
+            query = f"{date_prefix} {core}"
+        else:
+            query = core
+
     if len(query) < 5:
-        skip = {'the', 'a', 'an', 'and', 'or', 'but', 'so', 'here', 'test', 'i'}
-        keywords = [m.group() for m in re.finditer(r'\b[A-Z][a-zA-Z]{2,}\b', original)
+        # Last-resort keyword extraction
+        skip = {'the', 'a', 'an', 'and', 'or', 'but', 'so', 'here', 'test', 'i', 'please', 'find', 'out'}
+        keywords = [m.group() for m in re.finditer(r'\b[A-Za-z][A-Za-z0-9./-]{2,}\b', original)
                     if m.group().lower() not in skip]
-        keywords += [m.group() for m in re.finditer(r'\b20\d\d\b', original)]
-        query = ' '.join(keywords[:8]) if keywords else original[:100]
+        query = ' '.join(keywords[:10]) if keywords else original[:100]
 
-    if len(query) > 120:
-        query = query[:120].rsplit(' ', 1)[0]
-
-    print(f"[SEARCH-QUERY] Original: '{original[:60]}...' → Extracted: '{query}'")
+    print(f"[SEARCH-QUERY] Original: '{original[:70]}...' → Extracted: '{query}'")
     return query
 
 
@@ -1937,11 +1914,12 @@ def conversation_display(
             cfg.current_session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
             cfg.session_label = utility.summarize_session(session_messages)
             print(f"[SESSION] New session created: {cfg.session_label}")
-            # Clear pending new-session indicator now that a real session exists.
-            # The next update_session_buttons() call will show the proper label.
+            # Clear pending-new-session indicator now that a real session exists.
+            # The chained update_session_buttons() after this generator finishes
+            # will replace the placeholder with the labelled slot.
             if getattr(cfg, 'ONE_SHOT_PENDING_NEW_SESSION', False):
                 cfg.ONE_SHOT_PENDING_NEW_SESSION = False
-                print("[ONE-SHOT] Pending indicator cleared — session label assigned")
+                print("[SESSION] Pending indicator cleared — session label assigned")
         try:
             utility.save_session_history(session_messages, loaded_files)
             print("[SESSION] Auto-saved after complete response")
@@ -2293,9 +2271,9 @@ def launch_display():
             cancel_flag=gr.State(False),
             interaction_phase=gr.State("waiting_for_input"),
             is_reasoning_model=gr.State(False),
-            selected_panel=gr.State("History"),
+            # Panel mode: "Sessions" (history) or "Materials" (attachments)
+            panel_mode=gr.State("Sessions"),
             left_expanded_state=gr.State(True),
-            right_expanded_state=gr.State(True),
             model_settings=gr.State({}),
             web_search_enabled=gr.State(False),
             has_ai_response=gr.State(False),
@@ -2318,28 +2296,53 @@ def launch_display():
         with gr.Tabs():
             with gr.Tab("Interactions"):
                 with gr.Row():
-                    # LEFT PANEL
+                    # ── LEFT PANEL (Sessions / Materials) ─────────────────────
+                    # Expanded view: Panel Mode switch + either history slots
+                    # or attachment slots. Collapsed view: compact [ <-> ]
+                    # [ New ] [ Add ] strip that restores the last mode.
                     with gr.Column(visible=True, min_width=300, elem_classes=["clean-elements"]) as left_column_expanded:
                         toggle_button_left_expanded = gr.Button(">-------<", variant="secondary")
-                        gr.Markdown("**History**")
+                        panel_mode_radio = gr.Radio(
+                            choices=["Sessions", "Materials"],
+                            value="Sessions",
+                            label="Panel Mode",
+                            elem_classes=["clean-elements"],
+                        )
+                        # Sessions group (history)
                         with gr.Group(visible=True) as history_slots_group:
                             start_new_session_btn = gr.Button("Start New Session..", variant="secondary")
-                            buttons["session"] = [gr.Button(f"History Slot {i+1}", variant="huggingface", visible=False)
-                                                  for i in range(cfg.MAX_POSSIBLE_HISTORY_SLOTS)]
-
-                        # Sits below the session slots and is pushed to the foot
-                        # of the column by the .bottom-pinned margin-top:auto, so
-                        # it stays clear of the slots however many are shown.
-                        delete_history_btn = gr.Button(
-                            "Delete All History", variant="stop",
-                            elem_classes=["bottom-pinned"]
-                        )
+                            buttons["session"] = [
+                                gr.Button(f"History Slot {i+1}", variant="huggingface", visible=False)
+                                for i in range(cfg.MAX_POSSIBLE_HISTORY_SLOTS)
+                            ]
+                            delete_history_btn = gr.Button(
+                                "Delete All History", variant="stop",
+                                elem_classes=["bottom-pinned"]
+                            )
+                        # Materials group (attachments)
+                        with gr.Group(visible=False) as attach_group:
+                            attach_files = gr.UploadButton(
+                                "Add Attach Files..",
+                                file_types=[f".{ext}" for ext in cfg.ALLOWED_EXTENSIONS],
+                                file_count="multiple",
+                                variant="secondary"
+                            )
+                            attach_slots = [
+                                gr.Button("Attach Slot Free", variant="huggingface", visible=False)
+                                for _ in range(cfg.MAX_POSSIBLE_ATTACH_SLOTS)
+                            ]
 
                     with gr.Column(visible=False, min_width=60, elem_classes=["clean-elements"]) as left_column_collapsed:
                         toggle_button_left_collapsed = gr.Button("<->", variant="secondary")
                         new_session_btn_collapsed = gr.Button("New", variant="secondary")
+                        add_attach_files_collapsed = gr.UploadButton(
+                            "Add",
+                            file_types=[f".{ext}" for ext in cfg.ALLOWED_EXTENSIONS],
+                            file_count="multiple",
+                            variant="secondary"
+                        )
 
-                    # CENTER
+                    # ── CENTER (chat) ─────────────────────────────────────────
                     with gr.Column(scale=30, elem_classes=["clean-elements"]):
                         conversation_components["session_log"] = gr.Chatbot(
                             label="Session Log",
@@ -2353,10 +2356,6 @@ def launch_display():
 
                         with gr.Row(elem_classes=["clean-elements"]):
                             with gr.Column(scale=10):
-                                # Starts usable when a model is already
-                                # configured, so a returning session can type
-                                # immediately rather than waiting on the load
-                                # chain to catch up.
                                 _input_ready = model_is_selected()
                                 conversation_components["user_input"] = gr.Textbox(
                                     label="User Input",
@@ -2414,33 +2413,10 @@ def launch_display():
                                 "Emergency Stop", variant="stop",
                                 elem_classes=["send-button-red"], scale=1, visible=False
                             )
-                        # Hidden off-Row components — compat placeholders for output list lengths
+                        # Hidden compat placeholders
                         action_buttons["edit_previous"] = gr.Button("", variant="secondary", visible=False)
                         action_buttons["copy_response"] = gr.Button("", variant="secondary", visible=False)
                         action_buttons["cancel_input"]  = gr.Button("", variant="primary",   visible=False)
-
-                    # RIGHT PANEL
-                    with gr.Column(visible=True, min_width=300, elem_classes=["clean-elements"]) as right_column_expanded:
-                        toggle_button_right_expanded = gr.Button(">-------<", variant="secondary")
-                        gr.Markdown("**Attachments**")
-                        with gr.Group(visible=True) as attach_group:
-                            attach_files = gr.UploadButton(
-                                "Add Attach Files..",
-                                file_types=[f".{ext}" for ext in cfg.ALLOWED_EXTENSIONS],
-                                file_count="multiple",
-                                variant="secondary"
-                            )
-                            attach_slots = [gr.Button("Attach Slot Free", variant="huggingface", visible=False)
-                                            for _ in range(cfg.MAX_POSSIBLE_ATTACH_SLOTS)]
-
-                    with gr.Column(visible=False, min_width=60, elem_classes=["clean-elements"]) as right_column_collapsed:
-                        toggle_button_right_collapsed = gr.Button("<->", variant="secondary")
-                        add_attach_files_collapsed = gr.UploadButton(
-                            "Add",
-                            file_types=[f".{ext}" for ext in cfg.ALLOWED_EXTENSIONS],
-                            file_count="multiple",
-                            variant="secondary"
-                        )
 
                 with gr.Row():
                     interaction_global_status = gr.Textbox(
@@ -3010,7 +2986,7 @@ def launch_display():
             outputs=[debug_display, info_status]
         )
 
-        # Panel expand/collapse
+        # Panel expand/collapse + Sessions/Materials mode switch
         def toggle_left_panel(current_state):
             new_state = not current_state
             return new_state, gr.update(visible=new_state), gr.update(visible=not new_state)
@@ -3026,19 +3002,19 @@ def launch_display():
             outputs=[states["left_expanded_state"], left_column_expanded, left_column_collapsed]
         )
 
-        def toggle_right_panel(current_state):
-            new_state = not current_state
-            return new_state, gr.update(visible=new_state), gr.update(visible=not new_state)
+        def switch_panel_mode(mode):
+            """Show Sessions (history) or Materials (attachments) group."""
+            is_sessions = (mode == "Sessions")
+            return (
+                mode,
+                gr.update(visible=is_sessions),   # history_slots_group
+                gr.update(visible=not is_sessions),  # attach_group
+            )
 
-        toggle_button_right_expanded.click(
-            fn=toggle_right_panel,
-            inputs=[states["right_expanded_state"]],
-            outputs=[states["right_expanded_state"], right_column_expanded, right_column_collapsed]
-        )
-        toggle_button_right_collapsed.click(
-            fn=toggle_right_panel,
-            inputs=[states["right_expanded_state"]],
-            outputs=[states["right_expanded_state"], right_column_expanded, right_column_collapsed]
+        panel_mode_radio.change(
+            fn=switch_panel_mode,
+            inputs=[panel_mode_radio],
+            outputs=[states["panel_mode"], history_slots_group, attach_group]
         )
 
         # Web Search toggle
