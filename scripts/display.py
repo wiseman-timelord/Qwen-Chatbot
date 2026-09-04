@@ -1146,17 +1146,17 @@ def format_session_id(session_id):
 
 def update_action_buttons(phase, has_ai_response=False):
     """Update action buttons based on interaction phase.
-    Dynamic bar is simplified to two states only:
-      • waiting_for_input  →  'Send Input' visible, 'Wait' hidden
-      • generating         →  'Send Input' hidden, 'Wait' visible
+    Dynamic bar states:
+      • waiting_for_input  →  'Send Input' visible; Wait + Emergency Stop hidden
+      • generating         →  'Send Input' hidden; Wait + red Emergency Stop visible
     Edit Previous and Copy Output are handled by per-message inline icons.
     """
     if phase == "waiting_for_input":
-        action_visible, wait_visible = True, False
+        action_visible, wait_visible, stop_visible = True, False, False
     elif phase in ("input_submitted", "generating_response", "speaking"):
-        action_visible, wait_visible = False, True
+        action_visible, wait_visible, stop_visible = False, True, True
     else:
-        action_visible, wait_visible = True, False
+        action_visible, wait_visible, stop_visible = True, False, False
 
     action_value   = "Send Input"
     action_variant = "secondary" if phase == "waiting_for_input" else "primary"
@@ -1174,6 +1174,8 @@ def update_action_buttons(phase, has_ai_response=False):
         gr.update(visible=False),   # copy_response — removed from bar; compat placeholder
         gr.update(visible=False),   # cancel_input  — hidden placeholder
         gr.update(value=wait_value, variant="primary", interactive=False, visible=wait_visible),
+        gr.update(value="Emergency Stop", variant="stop",
+                  elem_classes=["send-button-red"], interactive=True, visible=stop_visible),
     ]
 
 
@@ -1350,10 +1352,62 @@ def update_sound_sample_rate(sample_rate):
 # =============================================================================
 
 _cancel_event = threading.Event()
+_cancel_watchdog = None  # threading.Timer for hard-stop if soft cancel stalls
+_HARD_STOP_SECONDS = 8.0  # if generation still active after this, force-unload model
 
 # Tracks time of last completed AI response — used by the Mem-Lock idle-unload timer.
 _last_response_time: float = 0.0
 _IDLE_UNLOAD_SECONDS = 20 * 60  # 20 minutes of inactivity → auto-unload (Mem-Lock mode only)
+
+
+def request_emergency_stop():
+    """Soft-cancel the active generation. Starts a hard-stop watchdog.
+
+    Soft path: sets _cancel_event so the token loop in get_response_stream
+    and the phase yields in conversation_display abort promptly.
+
+    Hard path (watchdog): if GENERATION_ACTIVE is still True after
+    _HARD_STOP_SECONDS, force-unload the model. Next Send Input will
+    re-load it (One-Shot or Mem-Lock both support this).
+    """
+    global _cancel_watchdog
+    print("[EMERGENCY-STOP] Soft cancel requested")
+    _cancel_event.set()
+    try:
+        from scripts.tools import stop_speaking
+        stop_speaking()
+    except Exception:
+        pass
+
+    def _hard_stop():
+        if not cfg.GENERATION_ACTIVE:
+            return
+        print("[EMERGENCY-STOP] Soft cancel did not complete in time — force-unloading model")
+        try:
+            cfg.GENERATION_ACTIVE = False  # allow unload_models to proceed
+            if cfg.MODELS_LOADED and cfg.llm is not None:
+                from scripts.inference import unload_models
+                _s, new_llm, new_loaded = unload_models(cfg.llm, cfg.MODELS_LOADED)
+                cfg.llm = new_llm
+                cfg.MODELS_LOADED = new_loaded
+                print(f"[EMERGENCY-STOP] Force unload: {_s}")
+            else:
+                print("[EMERGENCY-STOP] No model loaded to force-unload")
+        except Exception as e:
+            print(f"[EMERGENCY-STOP] Force unload error: {e}")
+
+    if _cancel_watchdog is not None:
+        try:
+            _cancel_watchdog.cancel()
+        except Exception:
+            pass
+    _cancel_watchdog = threading.Timer(_HARD_STOP_SECONDS, _hard_stop)
+    _cancel_watchdog.daemon = True
+    _cancel_watchdog.start()
+    return (
+        gr.update(value="⛔ Stopping…", interactive=False),
+        "Emergency Stop — cancelling inference…",
+    )
 
 
 def conversation_display(
@@ -1584,13 +1638,49 @@ def conversation_display(
     # Get ordered phase list based on enabled features
     phase_list = get_phase_list(web_search_enabled, tts_speak_enabled)
     
+    original_user_input = user_input  # restore this on Emergency Stop
+    _cancel_event.clear()  # fresh turn — clear any prior stop request
+
+    def _abort_to_edit():
+        """Undo the in-flight turn and return the user to editing their prompt.
+
+        Removes the user message (and any partial assistant message) that this
+        turn appended, restores the original prompt into the input box, and
+        resets the action bar to waiting_for_input so Emergency Stop disappears.
+        """
+        cfg.GENERATION_ACTIVE = False
+        # Drop the partial assistant reply (if any) then the user message
+        while session_messages and session_messages[-1].get("role") == "assistant":
+            session_messages.pop()
+        if session_messages and session_messages[-1].get("role") == "user":
+            session_messages.pop()
+        return (
+            get_chatbot_output(session_tuples, session_messages),
+            session_messages,
+            "⛔ Cancelled — edit your prompt and send again",
+            gr.update(value=original_user_input, visible=True),
+            gr.update(visible=False),
+            *update_action_buttons("waiting_for_input", locals().get("has_ai_response", has_ai_response_state)),
+            False,  # cancel_flag
+            loaded_files,
+            "waiting_for_input",
+            llm_state,
+            models_loaded_state,
+        )
+
     def yield_progress(phase_name):
-        """Yield progress update for a specific phase name."""
+        """Yield progress update for a specific phase name.
+
+        Returns None when Emergency Stop has been requested so the caller can
+        abort the turn via _abort_to_edit().
+        """
+        if _cancel_event.is_set():
+            return None
         try:
             step = phase_list.index(phase_name)
         except ValueError:
             step = 0
-        
+
         return (
             get_chatbot_output(session_tuples, session_messages),
             session_messages,
@@ -1606,7 +1696,11 @@ def conversation_display(
         )
 
     # PHASE 0: Handle Input
-    yield yield_progress("Handle Input")
+    _prog = yield_progress("Handle Input")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
 
     # PHASE 1: Build Prompt
     processed_input = user_input
@@ -1631,7 +1725,11 @@ def conversation_display(
         if file_parts:
             file_contents_section = "\n".join(file_parts)
 
-    yield yield_progress("Build Prompt")
+    _prog = yield_progress("Build Prompt")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
 
     # PHASE 2: Inject RAG
     effective_context = cfg.LOADED_CONTEXT_SIZE or cfg.CONTEXT_SIZE
@@ -1650,14 +1748,22 @@ def conversation_display(
         except Exception as e:
             print(f"[RAG-TEMP] Error: {e}")
 
-    yield yield_progress("Inject RAG")
+    _prog = yield_progress("Inject RAG")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
 
     # PHASE 3: Add System
     complete_user_message = processed_input
     if file_contents_section:
         complete_user_message = processed_input + file_contents_section
 
-    yield yield_progress("Add System")
+    _prog = yield_progress("Add System")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
 
     # PHASE 4: Assemble History
     session_messages = list(session_messages) if session_messages else []
@@ -1665,7 +1771,11 @@ def conversation_display(
     has_ai_response = len([m for m in session_messages[:-1] if m.get('role') == 'assistant']) > 0
     interaction_phase = "input_submitted"
 
-    yield yield_progress("Assemble History")
+    _prog = yield_progress("Assemble History")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
 
     # PHASE 5: Check Model
     model_settings = get_model_settings(cfg.MODEL_NAME)
@@ -1719,20 +1829,32 @@ def conversation_display(
             search_metadata = {'type': 'web_search', 'query': user_input[:100], 'error': str(e), 'sources': []}
             search_status_text = f"⚠️ Search Error: {str(e)}"
 
-    yield yield_progress("Check Model")
+    _prog = yield_progress("Check Model")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
 
     # Web search phases (if enabled)
     if web_search_enabled:
         for phase_name in ["Search Discovery", "Rank & Select", "Parallel Fetch", "Process & Merge", "Inject Context"]:
-            yield yield_progress(phase_name)
+            _prog = yield_progress(phase_name)
+            if _prog is None:
+                yield _abort_to_edit()
+                return
+            yield _prog
             time.sleep(0.15)
 
     # Generate Stream phase
-    yield yield_progress("Generate Stream")
-    _cancel_event.clear()
+    _prog = yield_progress("Generate Stream")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
 
     session_messages.append({'role': 'assistant', 'content': "AI-Chat:\n"})
     accumulated_response = ""
+    was_cancelled = False
 
     cfg.GENERATION_ACTIVE = True
     try:
@@ -1745,8 +1867,8 @@ def conversation_display(
             llm_state=llm_state,
             models_loaded_state=models_loaded_state
         ):
-            if _cancel_event.is_set():
-                accumulated_response += "\n\n[Response cancelled]"
+            if _cancel_event.is_set() or chunk == "<CANCELLED>":
+                was_cancelled = True
                 break
 
             accumulated_response += chunk
@@ -1784,13 +1906,25 @@ def conversation_display(
             )
 
     except Exception as e:
-        accumulated_response = f"Error: {str(e)}"
-        session_messages[-1]['content'] = accumulated_response
+        if not was_cancelled:
+            accumulated_response = f"Error: {str(e)}"
+            if session_messages and session_messages[-1].get("role") == "assistant":
+                session_messages[-1]['content'] = accumulated_response
     finally:
         cfg.GENERATION_ACTIVE = False
 
+    # Emergency Stop: restore prompt and exit without formatting/saving
+    if was_cancelled or _cancel_event.is_set():
+        print("[EMERGENCY-STOP] Generation cancelled — restoring prompt")
+        yield _abort_to_edit()
+        return
+
     # Format Response phase
-    yield yield_progress("Format Response")
+    _prog = yield_progress("Format Response")
+    if _prog is None:
+        yield _abort_to_edit()
+        return
+    yield _prog
     formatted_response = format_response(accumulated_response)
     formatted_response = re.sub(r'^AI-Chat:\s*\n?', '', formatted_response, flags=re.MULTILINE)
     formatted_response = re.sub(r'\nAI-Chat:\s*\n?', '\n', formatted_response)
@@ -2276,6 +2410,10 @@ def launch_display():
                         with gr.Row(elem_classes=["clean-elements"]):
                             action_buttons["action"] = gr.Button("Send Input", variant="secondary", elem_classes=["send-button-green"], scale=1)
                             action_buttons["cancel_response"] = gr.Button("..Wait For Response..", variant="primary", scale=1, visible=False)
+                            action_buttons["emergency_stop"] = gr.Button(
+                                "Emergency Stop", variant="stop",
+                                elem_classes=["send-button-red"], scale=1, visible=False
+                            )
                         # Hidden off-Row components — compat placeholders for output list lengths
                         action_buttons["edit_previous"] = gr.Button("", variant="secondary", visible=False)
                         action_buttons["copy_response"] = gr.Button("", variant="secondary", visible=False)
@@ -2657,6 +2795,7 @@ def launch_display():
                 action_buttons["copy_response"],
                 action_buttons["cancel_input"],
                 action_buttons["cancel_response"],
+                action_buttons["emergency_stop"],
                 states["cancel_flag"],
                 states["attached_files"],
                 states["interaction_phase"],
@@ -2675,6 +2814,19 @@ def launch_display():
             fn=lambda: get_model_loaded_display(cfg.MODELS_LOADED),
             inputs=[],
             outputs=[model_loaded_indicator]
+        )
+
+        # ── Emergency Stop ───────────────────────────────────────────────────
+        # Soft-cancel via _cancel_event; watchdog force-unloads if the stream
+        # does not abort within _HARD_STOP_SECONDS. conversation_display itself
+        # restores the prompt and UI once it observes the event.
+        action_buttons["emergency_stop"].click(
+            fn=request_emergency_stop,
+            inputs=[],
+            outputs=[
+                action_buttons["emergency_stop"],
+                interaction_global_status,
+            ]
         )
 
         # ── Model dropdown change ────────────────────────────────────────────
@@ -2938,6 +3090,7 @@ def launch_display():
                 action_buttons["copy_response"],
                 action_buttons["cancel_input"],
                 action_buttons["cancel_response"],
+                action_buttons["emergency_stop"],
             ]
         )
 
@@ -2980,6 +3133,7 @@ def launch_display():
                 action_buttons["copy_response"],
                 action_buttons["cancel_input"],
                 action_buttons["cancel_response"],
+                action_buttons["emergency_stop"],
                 states["cancel_flag"],
                 states["attached_files"],
                 states["interaction_phase"],
@@ -3470,6 +3624,7 @@ def launch_display():
             action_buttons["copy_response"],
             action_buttons["cancel_input"],
             action_buttons["cancel_response"],
+            action_buttons["emergency_stop"],
             states["llm"],
             states["models_loaded"],
         ]
@@ -3510,7 +3665,8 @@ def launch_display():
                     action_buttons["edit_previous"],
                     action_buttons["copy_response"],
                     action_buttons["cancel_input"],
-                    action_buttons["cancel_response"]
+                    action_buttons["cancel_response"],
+                    action_buttons["emergency_stop"],
                 ]
             ).then(
                 # Refresh session panel: removes ⏳ placeholder if present
