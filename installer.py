@@ -10,6 +10,7 @@ import sys
 import contextlib
 import time
 import threading
+import codecs
 from pathlib import Path
 import shutil
 import atexit
@@ -631,44 +632,31 @@ def create_files_and_directories(backend: str) -> None:
 # =============================================================================
 # Order matters. kokoro (in BASE_REQ) and sentence-transformers both depend on
 # torch. If torch is absent when they install, pip pulls the default PyPI
-# Windows wheel (no +cpu tag). That wheel then fights the intentional CPU build
-# from download.pytorch.org, leaving the venv with a broken or missing torch
-# (symptom: "No module named 'torch'" at verification).
+# Windows wheel (no +cpu tag). That fights the intentional CPU build from
+# download.pytorch.org (symptom: "No module named 'torch'" at verification).
 #
 # Fix:
 #   1. install_torch_cpu() runs FIRST, before BASE_REQ.
-#   2. After transformers / sentence-transformers, re-assert the CPU torch so
-#      any overwrite from dependency resolution is undone.
+#   2. After transformers / sentence-transformers, re-assert the CPU torch.
 #   3. Verify import with the venv python.exe (full path — no activation needed).
 
 def install_torch_cpu() -> bool:
-    """Install the official CPU torch wheel from pytorch.org.
-
-    Must run before any package that declares a torch dependency (kokoro,
-    sentence-transformers, etc.).
-    """
+    """Install the official CPU torch wheel from pytorch.org before torch deps."""
     pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
     torch_req = "torch>=2.5.0"
-
     print_status(f"Installing PyTorch (CPU) — {torch_req}...")
     if not pip_install_with_retry(
-        pip_exe,
-        torch_req,
-        [
-            "--index-url", "https://download.pytorch.org/whl/cpu",
-            "--upgrade-strategy", "only-if-needed",
-        ],
-        max_retries=10,
-        initial_delay=5.0,
+        pip_exe, torch_req,
+        ["--index-url", "https://download.pytorch.org/whl/cpu",
+         "--upgrade-strategy", "only-if-needed"],
+        max_retries=10, initial_delay=5.0,
     ):
         print_status("PyTorch installation failed", False)
         return False
     print_status("PyTorch (CPU) installed")
-
     subprocess.run(
         [pip_exe, "install", "setuptools>=80.0", "--upgrade", "--quiet"],
-        capture_output=True,
-        timeout=120,
+        capture_output=True, timeout=120,
     )
     print_status("setuptools restored after torch install")
     return True
@@ -680,15 +668,10 @@ def _reassert_torch_cpu() -> bool:
     torch_req = "torch>=2.5.0"
     print_status("Re-asserting PyTorch (CPU) after dependency packages...")
     if not pip_install_with_retry(
-        pip_exe,
-        torch_req,
-        [
-            "--index-url", "https://download.pytorch.org/whl/cpu",
-            "--force-reinstall",
-            "--no-deps",
-        ],
-        max_retries=5,
-        initial_delay=3.0,
+        pip_exe, torch_req,
+        ["--index-url", "https://download.pytorch.org/whl/cpu",
+         "--force-reinstall", "--no-deps"],
+        max_retries=5, initial_delay=3.0,
     ):
         print_status("Failed to re-assert PyTorch (CPU)", False)
         return False
@@ -697,24 +680,17 @@ def _reassert_torch_cpu() -> bool:
 
 
 def install_embedding_backend() -> bool:
-    """Install transformers + sentence-transformers, lock CPU torch, verify imports.
-
-    Assumes install_torch_cpu() has already run (called earlier from
-    install_python_deps).
-    """
+    """Install transformers + sentence-transformers, lock CPU torch, verify imports."""
     python_exe = str(VENV_DIR / "Scripts" / "python.exe")
     pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
-
     transformers_version = "transformers>=4.44.0"
     sentence_transformers_version = "sentence-transformers>=3.3.0"
 
     print_status(f"Installing {transformers_version}...")
     if not pip_install_with_retry(
-        pip_exe,
-        transformers_version,
+        pip_exe, transformers_version,
         ["--upgrade-strategy", "only-if-needed"],
-        max_retries=10,
-        initial_delay=5.0,
+        max_retries=10, initial_delay=5.0,
     ):
         print_status("transformers installation failed", False)
         return False
@@ -722,11 +698,9 @@ def install_embedding_backend() -> bool:
 
     print_status(f"Installing {sentence_transformers_version}...")
     if not pip_install_with_retry(
-        pip_exe,
-        sentence_transformers_version,
+        pip_exe, sentence_transformers_version,
         ["--upgrade-strategy", "only-if-needed"],
-        max_retries=10,
-        initial_delay=5.0,
+        max_retries=10, initial_delay=5.0,
     ):
         print_status("sentence-transformers installation failed", False)
         return False
@@ -762,9 +736,7 @@ def install_embedding_backend() -> bool:
             f.write(verify_script)
         verify_result = subprocess.run(
             [python_exe, str(verify_path)],
-            capture_output=True,
-            text=True,
-            timeout=120,
+            capture_output=True, text=True, timeout=120,
         )
         verify_path.unlink(missing_ok=True)
         out = (verify_result.stdout or "") + (verify_result.stderr or "")
@@ -968,12 +940,7 @@ def create_system_ini(os_version, python_version,
                       install_method=None,
                       backend_key=None,
                       llama_wheel_vulkan=None):
-    """Write data/constants.ini with system, TTS, and last-install metadata.
-
-    install_method / backend_key / llama_wheel_vulkan are recorded under
-    [install] so later Check/Install and Check/Recompile Binaries runs can
-    skip work that is already correct.
-    """
+    """Write data/constants.ini with system, TTS, and last-install metadata."""
     from datetime import datetime as _dt
     system_ini_path = BASE_DIR / "data" / "constants.ini"
     try:
@@ -1012,8 +979,6 @@ def create_system_ini(os_version, python_version,
                     all_ids.extend(pack["voice_ids"])
                 f.write(f"tts_enabled_voices = {','.join(all_ids)}\n")
 
-            # Last successful install notation — used by options 2/3 to decide
-            # whether a wheel/binary already matches the selected backend.
             f.write("\n[install]\n")
             f.write(f"last_success = {_dt.now().isoformat(timespec='seconds')}\n")
             f.write(f"last_method = {install_method or 'unknown'}\n")
@@ -1029,6 +994,7 @@ def create_system_ini(os_version, python_version,
     except Exception as e:
         print_status(f"Failed to create constants.ini: {str(e)}", False)
         return False
+
 
 
 def update_ini_wheel_version(version: str) -> bool:
@@ -1443,7 +1409,6 @@ def show_main_menu() -> str:
     print_header("Install Method")
 
     # ── System Detections ──────────────────────────────────────────────
-    print()
     print("System Detections...")
 
     # CPU Features
@@ -1491,7 +1456,6 @@ def show_embedding_menu() -> str:
     width = shutil.get_terminal_size().columns - 1
 
     print_header("Embeddings Size")
-    print()
     print()
     print()
     print()
@@ -1643,7 +1607,7 @@ if os.path.exists(locks_dir):
 
 os.environ["HF_HOME"]                       = r"{hf_cache}"
 os.environ["HUGGINGFACE_HUB_CACHE"]         = r"{hf_cache}"
-os.environ["CUDA_VISIBLE_DEVICES"]          = ""
+os.environ["CUDA_VISIBLE_DEVICES"]          = " "
 os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "0"  # Enable progress to verify it's not hanging
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 os.environ["HF_HUB_VERBOSITY"]             = "info" # Show info/warnings (e.g., unauthenticated rate limits)
@@ -1699,24 +1663,24 @@ if failed_voices:
 # then optionally warm up KPipeline. Package missing is fatal; warm-up
 # failure after a successful import is a warning only (weights are ready).
 print("[TTS] Phase 3/3 — Ensuring kokoro package + pipeline warm-up...", flush=True)
-print(f"[TTS] python={sys.executable}", flush=True)
+print(f"[TTS] python={{sys.executable}}", flush=True)
 
 try:
     import kokoro  # noqa: F401
 except ImportError:
     print("[TTS] kokoro package not found — installing into this venv...", flush=True)
     import subprocess as _sp
-    r = _sp.run(
+    _r = _sp.run(
         [sys.executable, "-m", "pip", "install", "kokoro>=0.9.4", "--upgrade-strategy", "only-if-needed"],
         capture_output=True, text=True,
     )
-    if r.returncode != 0:
-        print(f"[TTS] ERROR: pip install kokoro failed:\n{r.stdout}\n{r.stderr}", flush=True)
+    if _r.returncode != 0:
+        print(f"[TTS] ERROR: pip install kokoro failed:\\n{{_r.stdout}}\\n{{_r.stderr}}", flush=True)
         sys.exit(1)
     try:
         import kokoro  # noqa: F401
     except ImportError as e:
-        print(f"[TTS] ERROR: kokoro still not importable after pip install: {e}", flush=True)
+        print(f"[TTS] ERROR: kokoro still not importable after pip install: {{e}}", flush=True)
         sys.exit(1)
     print("[TTS] kokoro package installed.", flush=True)
 
@@ -1726,13 +1690,17 @@ try:
     print("[TTS] KPipeline created successfully — Kokoro is ready.", flush=True)
 except Exception as e:
     # Weights + voices are already downloaded; runtime can still work.
-    print(f"[TTS] WARNING: pipeline warm-up failed (models are on disk): {e}", flush=True)
+    print(f"[TTS] WARNING: pipeline warm-up failed (models are on disk): {{e}}", flush=True)
     traceback.print_exc()
 
 print("[TTS] All phases complete.", flush=True)
 sys.exit(0)
 '''
-    script_path = TEMP_DIR / "download_kokoro.py"
+    # Kokoro is download-only (pip wheel install + HF file downloads), never
+    # compiled — so its scratch script belongs under data/temp, not the
+    # C:\temp_build short-path staging area reserved for actual builds
+    # (CMake/MSVC path-length workaround; see WIN_COMPILE_TEMP).
+    script_path = BASE_DIR / "data" / "temp" / "download_kokoro.py"
     try:
         script_path.parent.mkdir(parents=True, exist_ok=True)
         with open(script_path, 'w', encoding='utf-8') as f:
@@ -1745,22 +1713,44 @@ sys.exit(0)
         # Stream output live — user can see progress and it doesn't look like a hang.
         # Timeout is a wall-clock deadline (30 min) rather than subprocess.run timeout 
         # which would kill a legitimately slow download mid-stream.
+        #
+        # NOTE: no text=True here — text mode's universal-newline translation
+        # converts every lone \r (which tqdm relies on to overwrite its own
+        # progress line) into \n, turning one live-updating bar into hundreds
+        # of separate printed lines. Read raw bytes and split on \r/\n
+        # ourselves instead, preserving whichever terminator was actually sent.
         proc = subprocess.Popen(
             [python_exe, str(script_path)],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,   # merge stderr into stdout
-            text=True,
-            bufsize=1,                  # line-buffered
+            bufsize=0,                  # unbuffered — we do our own chunking
         )
 
         timed_out = False
         deadline  = time.time() + 1800   # 30-minute hard cap
 
-        for line in proc.stdout:
-            # Suppress pip's "[notice] A new release of pip is available" noise
-            if line.startswith("[notice]") or "new release of pip" in line:
-                continue
-            print(f"  {line}", end="", flush=True)
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+        buf = ""
+        while True:
+            byte = proc.stdout.read(1)
+            if byte:
+                buf += decoder.decode(byte)
+            elif proc.poll() is not None:
+                break
+
+            while True:
+                idx_r = buf.find("\r")
+                idx_n = buf.find("\n")
+                candidates = [i for i in (idx_r, idx_n) if i != -1]
+                if not candidates:
+                    break
+                idx = min(candidates)
+                segment, term, buf = buf[:idx], buf[idx], buf[idx + 1:]
+                # Suppress pip's "[notice] A new release of pip is available" noise
+                if segment.startswith("[notice]") or "new release of pip" in segment:
+                    continue
+                print(f"  {segment}", end=term, flush=True)
+
             if time.time() > deadline:
                 proc.kill()
                 timed_out = True
@@ -2085,7 +2075,7 @@ def _read_install_record() -> dict:
 
 
 def _binary_dir_looks_vulkan(bin_dir: Path) -> bool | None:
-    """Return True if dir contains Vulkan llama bits, False if CPU-only, None if empty/missing."""
+    """True if dir has Vulkan llama bits, False if CPU-only, None if empty/missing."""
     if not bin_dir.is_dir():
         return None
     names = [p.name.lower() for p in bin_dir.iterdir() if p.is_file()]
@@ -2094,7 +2084,6 @@ def _binary_dir_looks_vulkan(bin_dir: Path) -> bool | None:
     has_cli = any(n == 'llama-cli.exe' or n.startswith('llama-cli') for n in names)
     if not has_cli:
         return None
-    # ggml-vulkan / vulkan DLLs indicate a Vulkan build
     vk_markers = ('ggml-vulkan', 'vulkan-1', 'libvulkan')
     if any(any(m in n for m in vk_markers) for n in names):
         return True
@@ -2102,12 +2091,12 @@ def _binary_dir_looks_vulkan(bin_dir: Path) -> bool | None:
 
 
 def _ensure_prebuilt_binary(backend: str) -> bool:
-    """Download and extract a prebuilt llama.cpp zip when BACKEND_OPTIONS provides a URL."""
+    """Download/extract prebuilt llama.cpp zip when BACKEND_OPTIONS provides a URL."""
     info = BACKEND_OPTIONS[backend]
     url = info.get('url')
     dest = info.get('dest')
     if not url or not dest:
-        return True  # nothing to download for this backend
+        return True
 
     dest_path = BASE_DIR / dest
     cli = BASE_DIR / (info.get('cli_path') or '')
@@ -2135,7 +2124,6 @@ def _ensure_prebuilt_binary(backend: str) -> bool:
         with zipfile.ZipFile(str(zip_path), 'r') as zf:
             zf.extractall(str(dest_path))
         zip_path.unlink(missing_ok=True)
-        # Some zips nest a single top-level folder — flatten if so
         children = list(dest_path.iterdir())
         if len(children) == 1 and children[0].is_dir():
             nested = children[0]
@@ -2149,7 +2137,6 @@ def _ensure_prebuilt_binary(backend: str) -> bool:
                 item.rename(target)
             nested.rmdir()
         if not (BASE_DIR / info['cli_path']).is_file():
-            # Accept llama-cli.exe anywhere under dest
             found = list(dest_path.rglob('llama-cli.exe'))
             if found:
                 print_status(f"Found llama-cli.exe at {found[0].relative_to(BASE_DIR)}")
@@ -2164,36 +2151,28 @@ def _ensure_prebuilt_binary(backend: str) -> bool:
 
 
 def _ensure_llama_wheel_for_backend(backend: str, force: bool = False) -> bool:
-    """Ensure llama-cpp-python wheel matches the backend (CPU vs Vulkan).
-
-    force=True always rebuilds/reinstalls. force=False skips when an existing
-    wheel already matches the required Vulkan/CPU kind.
-    """
+    """Ensure llama-cpp-python wheel matches the backend (CPU vs Vulkan)."""
     global _INSTALLED_LLAMA_WHEEL_VERSION
     info = BACKEND_OPTIONS[backend]
     pip_exe = str(VENV_DIR / "Scripts" / "pip.exe")
     needs_vulkan = bool(info.get("build_flags", {}).get("GGML_VULKAN")) or (
         info.get("vulkan_required") and info.get("compile_wheel")
     )
-    # Compile path only when the menu entry requests a compiled wheel
     compile_wheel = bool(info.get("compile_wheel"))
 
     existing = get_installed_llama_info()
     if existing and not force:
-        if existing["vulkan"] == needs_vulkan or (not compile_wheel and not needs_vulkan and not existing["vulkan"]):
-            # For prebuilt CPU wheel backends, any non-vulkan wheel is fine
-            if not compile_wheel and not needs_vulkan and not existing["vulkan"]:
-                print_status(f"llama-cpp-python {existing['version']} (CPU) already matches — skipping")
-                _INSTALLED_LLAMA_WHEEL_VERSION = f"v{existing['version']}"
-                return True
-            if compile_wheel and existing["vulkan"] == needs_vulkan:
-                kind = "Vulkan" if needs_vulkan else "CPU"
-                print_status(f"llama-cpp-python {existing['version']} ({kind}) already matches — skipping")
-                _INSTALLED_LLAMA_WHEEL_VERSION = f"v{existing['version']}"
-                return True
+        if not compile_wheel and not needs_vulkan and not existing["vulkan"]:
+            print_status(f"llama-cpp-python {existing['version']} (CPU) already matches — skipping")
+            _INSTALLED_LLAMA_WHEEL_VERSION = f"v{existing['version']}"
+            return True
+        if compile_wheel and existing["vulkan"] == needs_vulkan:
+            kind = "Vulkan" if needs_vulkan else "CPU"
+            print_status(f"llama-cpp-python {existing['version']} ({kind}) already matches — skipping")
+            _INSTALLED_LLAMA_WHEEL_VERSION = f"v{existing['version']}"
+            return True
 
     if not compile_wheel:
-        # Prebuilt CPU wheel path (same as install_python_deps branch)
         wheel_version = LLAMACPP_PYTHON_PREBUILT_VERSION.lstrip("v")
         if existing and existing["version"] == wheel_version and not existing["vulkan"] and not force:
             _INSTALLED_LLAMA_WHEEL_VERSION = f"v{wheel_version}"
@@ -2226,7 +2205,6 @@ def _ensure_llama_wheel_for_backend(backend: str, force: bool = False) -> bool:
             return False
         return True
 
-    # Compile path
     build_flags = info.get("build_flags", {})
     if build_flags.get("GGML_VULKAN") and not check_vulkan_sdk_installed():
         print_status("Error: Vulkan SDK not found (required for Vulkan wheel)", False)
@@ -2275,12 +2253,11 @@ def _finalize_configs(backend: str, embedding_model: str, tts_choice: str,
 def run_installer():
     """Main installer flow with 4-option menu.
 
-    1. Clean/Purge Install All     — wipe venv, install libraries + binaries + models
-    2. Check/Install Python/Libraries — packages, embedding, TTS (reuse matching wheel)
-    3. Check/Recompile Binaries    — wheel + prebuilt bin only; skip library reinstall
-    4. Refresh Configs/Inis        — rewrite constants.ini / JSON from existing state
+    1. Clean/Purge Install All
+    2. Check/Install Python/Libraries
+    3. Check/Recompile Binaries
+    4. Refresh Configs/Inis
     """
-
     if not check_version_compatibility():
         print("\nSystem requirements not met. Installation cannot continue.")
         return
@@ -2293,7 +2270,6 @@ def run_installer():
         print("\nInstallation abandoned.")
         return
 
-    # ── 4. Refresh configs only ──────────────────────────────────────────
     if main_choice == '4':
         refresh_configs()
         return
@@ -2302,10 +2278,8 @@ def run_installer():
     libraries_only = (main_choice == '2')
     binaries_only = (main_choice == '3')
 
-    # Shared menus (backend always needed; embed/TTS for full & library paths)
     record = _read_install_record()
 
-    # Backend selection (always)
     backend_choice = show_backend_menu()
     if backend_choice == 'A':
         print("\nInstallation abandoned.")
@@ -2330,7 +2304,6 @@ def run_installer():
             return
         voice_pack = KOKORO_VOICE_PACKS[tts_choice]
 
-    # ── Execute ──────────────────────────────────────────────────────────
     clear_screen()
     print_header("Installing...")
 
@@ -2353,7 +2326,6 @@ def run_installer():
         if not ensure_venv():
             return
 
-    # ── Option 3: binaries only ──────────────────────────────────────────
     if binaries_only:
         if not _ensure_prebuilt_binary(backend):
             print_status("Binary setup failed. Installation aborted.", False)
@@ -2369,9 +2341,6 @@ def run_installer():
         print()
         return
 
-    # ── Options 1 & 2: Python libraries (+ binaries on clean) ────────────
-    # install_python_deps already installs the matching wheel; on Check/Install
-    # it skips when the existing wheel matches.
     if not install_python_deps(backend, skip_if_present=not is_clean):
         print_status("Python dependency installation failed. Installation aborted.", False)
         return
@@ -2388,7 +2357,6 @@ def run_installer():
         print_status("Kokoro TTS download failed. Installation aborted.", False)
         return
 
-    # Prebuilt standalone binary (when the selected backend has a URL)
     if not _ensure_prebuilt_binary(backend):
         print_status("Binary setup failed. Installation aborted.", False)
         return
