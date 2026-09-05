@@ -2305,7 +2305,7 @@ def launch_display():
                         panel_mode_radio = gr.Radio(
                             choices=["Sessions", "Materials"],
                             value="Sessions",
-                            label="Panel Mode",
+                            label="Column Mode",
                             elem_classes=["clean-elements"],
                         )
                         # Sessions group (history)
