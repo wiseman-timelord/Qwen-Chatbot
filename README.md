@@ -9,8 +9,8 @@ A high-quality local chat interface for Qwen GGUF models on Windows 10/11 (WSL n
 - Here I am testing the Qwen3.8-9B-Abliterated-25-GGUF model, you can see the recently simplified interface layout (v0.25)... 
 ![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/Interactions_Page.jpg)
 
-- Here I am on the Configuration page, you can see there are many options here, but not too many (v0.25)... 
-![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/Interactions_Page.jpg)
+- Here I am on the Configuration page, you can see there are many options here, but not too many (v0.26)... 
+![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/Configuration_Page.jpg)
 
 ### Features
 - **Qt-Web Custom Browser**: The interface uses Qt6 WebEngine with Gradio, appearing as a regular application; your default browser is untouched.
