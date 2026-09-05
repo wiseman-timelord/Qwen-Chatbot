@@ -898,9 +898,16 @@ def synthesize_last_response(session_messages: list) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _play_audio_file(file_path: str, output_device: Optional[str] = None):
-    """Play an audio file using Windows audio."""
+    """Play an audio file using Windows audio.
+
+    Uses blocking winsound so the call site can treat playback as synchronous.
+    stop_speaking() interrupts via SND_PURGE from another thread, which causes
+    the blocking PlaySound call to return promptly.
+    """
     try:
         import winsound
+        # Blocking play — interrupted by winsound.PlaySound(None, SND_PURGE)
+        # from stop_speaking() on another thread.
         winsound.PlaySound(file_path, winsound.SND_FILENAME)
         return
     except Exception:
@@ -915,7 +922,11 @@ def _play_audio_file(file_path: str, output_device: Optional[str] = None):
 
 
 def play_tts_audio(wav_path: str, output_device: Optional[str] = None):
-    """Play a synthesised TTS WAV file (blocking) then delete it."""
+    """Play a synthesised TTS WAV file (blocking) then delete it.
+
+    Respects _tts_stop_flag before and after playback. stop_speaking() can
+    interrupt a mid-play winsound call via SND_PURGE.
+    """
     if not wav_path or wav_path == "__played__":
         return
     try:
@@ -923,6 +934,7 @@ def play_tts_audio(wav_path: str, output_device: Optional[str] = None):
             print(f"[TTS] Audio file not found: {wav_path}")
             return
         if _tts_stop_flag.is_set():
+            print("[TTS] Playback skipped — stop flag set")
             return
         if output_device is None:
             output_device = getattr(cfg, "SOUND_OUTPUT_DEVICE", "Default Sound Device")
@@ -930,7 +942,10 @@ def play_tts_audio(wav_path: str, output_device: Optional[str] = None):
             output_device = "default"
         print(f"[TTS] Playing audio: {wav_path}")
         _play_audio_file(wav_path, output_device)
-        print("[TTS] Playback complete")
+        if _tts_stop_flag.is_set():
+            print("[TTS] Playback interrupted")
+        else:
+            print("[TTS] Playback complete")
     except Exception as e:
         print(f"[TTS] Playback error: {e}")
     finally:
@@ -984,6 +999,7 @@ def speak_text(text: str, voice_id: Optional[str] = None,
     if not sample_rate:
         sample_rate = getattr(cfg, "SOUND_SAMPLE_RATE", 24000)
 
+    clear_tts_stop()
     _tts_thread = threading.Thread(
         target=_speak_thread,
         args=(text, voice_id, output_device, sample_rate),
@@ -996,11 +1012,25 @@ def speak_text(text: str, voice_id: Optional[str] = None,
 
 
 def stop_speaking():
-    """Stop any ongoing TTS playback."""
+    """Stop any ongoing TTS synthesis or playback immediately.
+
+    Sets the stop flag (checked between synthesis chunks and before play) and
+    issues winsound SND_PURGE so a blocking PlaySound returns at once. Safe to
+    call from Emergency Stop, from the per-message pause/skip button, or from
+    any other path that needs to silence audio without cancelling inference.
+    """
     global _tts_thread
     _tts_stop_flag.set()
+    try:
+        import winsound
+        # SND_PURGE stops any sound currently playing via winsound, unblocking
+        # a concurrent PlaySound(..., SND_FILENAME) call on another thread.
+        winsound.PlaySound(None, winsound.SND_PURGE)
+    except Exception:
+        pass
     if _tts_thread and _tts_thread.is_alive():
-        _tts_thread.join(timeout=1.0)
+        _tts_thread.join(timeout=1.5)
+    _tts_thread = None
 
 
 def clear_tts_stop():
@@ -1008,8 +1038,13 @@ def clear_tts_stop():
     _tts_stop_flag.clear()
 
 
+def is_tts_stop_requested() -> bool:
+    """Return True when stop_speaking() has been called and not yet cleared."""
+    return _tts_stop_flag.is_set()
+
+
 def is_speaking() -> bool:
-    """Return True if TTS is actively playing."""
+    """Return True if a speak_text background thread is still alive."""
     global _tts_thread
     return _tts_thread is not None and _tts_thread.is_alive()
 
