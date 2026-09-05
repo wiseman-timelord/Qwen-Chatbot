@@ -607,24 +607,6 @@ def get_filter_text_for_display():
     return filter_list_to_text(cfg.ACTIVE_FILTER or cfg.DEFAULT_FILTER_RULES)
 
 
-def get_filter_key_text():
-    """Static legend for the escape sequences the filter panel accepts.
-
-    Rules are parsed with Python's unicode_escape codec, so this lists the
-    escapes users are actually able to type into find/replace strings.
-    """
-    return (
-        "-> = find / replace\n"
-        "\n"
-        "\\n = New Line\n"
-        "\\t = Tab\n"
-        "\\r = Carriage Return\n"
-        "\\\\ = Backslash\n"
-        "\\' = Single Quote\n"
-        "\\\" = Double Quote\n"
-    )
-
-
 def filter_list_to_text(filter_list):
     """Convert filter list to editable text format."""
     lines = []
@@ -942,8 +924,8 @@ def handle_inline_copy(action_str, session_messages):
 
 
 def _tts_worker(msg_index, text):
-    """Background worker for TTS: synthesize then play."""
-    from scripts.tools import clear_tts_stop
+    """Background worker for TTS: synthesize then play (interruptible)."""
+    from scripts.tools import clear_tts_stop, is_tts_stop_requested
     clear_tts_stop()
 
     cfg.TTS_BUSY = True
@@ -953,6 +935,14 @@ def _tts_worker(msg_index, text):
     try:
         print(f"[TTS] Starting synthesis for msg {msg_index} ({len(text)} chars)...")
         wav_path = synthesize_text_to_file(text)
+        if is_tts_stop_requested():
+            print(f"[TTS] Stopped after synthesis (msg {msg_index})")
+            if wav_path:
+                try:
+                    Path(wav_path).unlink(missing_ok=True)
+                except Exception:
+                    pass
+            return
         if wav_path and os.path.exists(wav_path):
             cfg.TTS_PHASE = "playing"
             play_tts_audio(wav_path)
@@ -1374,7 +1364,6 @@ def request_emergency_stop():
         stop_speaking()
     except Exception:
         pass
-    # Reset per-message TTS UI state so ▶ icons return after purge
     cfg.TTS_PHASE = "idle"
     cfg.TTS_CURRENT_MSG_IDX = None
     cfg.TTS_BUSY = False
@@ -1962,15 +1951,9 @@ def conversation_display(
     global _last_response_time
     _last_response_time = time.time()
 
-    # Auto-TTS: synchronous with progress stages.
-    # Sets TTS_PHASE / TTS_BUSY / TTS_CURRENT_MSG_IDX so the per-message ▶ icon
-    # switches to ⏸ via tts_heartbeat + JS polling — even when playback was
-    # started by the toolbar Auto-TTS toggle rather than a manual ▶ click.
-    #
-    # Stop semantics after the response is already complete:
-    #   • Pause/skip (per-message ⏸) or Emergency Stop both call stop_speaking().
-    #   • We only skip the remaining TTS work; we never call _abort_to_edit()
-    #     here — the response stays in the log and the turn finishes normally.
+    # Auto-TTS: NON-BLOCKING background worker (same path as manual ▶).
+    # Never play on the Gradio generator thread — that freezes Emergency Stop
+    # and the per-message ⏸ button until audio ends.
     if tts_speak_enabled and cfg.TTS_ENABLED:
         try:
             bot_msgs = [m for m in session_messages if m.get("role") == "assistant"]
@@ -1984,42 +1967,22 @@ def conversation_display(
                             text = text[:cfg.MAX_TTS_LENGTH]
                             print(f"[AUTO-TTS] Text truncated to {cfg.MAX_TTS_LENGTH} chars")
 
-                        clear_tts_stop()
-                        cfg.TTS_BUSY = True
-                        cfg.TTS_PHASE = "generating"
-                        cfg.TTS_CURRENT_MSG_IDX = msg_idx
-
-                        # Progress UI (do not abort the turn on cancel — response is done)
-                        _prog = yield_progress("Synthesizing Speech")
-                        if _prog is not None:
-                            yield _prog
-                        if is_tts_stop_requested() or _cancel_event.is_set():
-                            print("[AUTO-TTS] Skipped synthesis (stop requested)")
+                        if cfg.TTS_BUSY:
+                            print("[AUTO-TTS] TTS already busy — skipping auto-speak")
                         else:
-                            wav_path = synthesize_text_to_file(text)
-
-                            if is_tts_stop_requested() or _cancel_event.is_set():
-                                print("[AUTO-TTS] Skipped playback (stop requested after synth)")
-                            elif wav_path and os.path.exists(wav_path):
-                                cfg.TTS_PHASE = "playing"
-                                _prog = yield_progress("Playing Audio")
-                                if _prog is not None:
-                                    yield _prog
-                                if not (is_tts_stop_requested() or _cancel_event.is_set()):
-                                    play_tts_audio(wav_path)
-                                    if is_tts_stop_requested() or _cancel_event.is_set():
-                                        print(f"[AUTO-TTS] Playback interrupted for msg {msg_idx}")
-                                    else:
-                                        print(f"[AUTO-TTS] Completed for msg {msg_idx}")
-                                else:
-                                    print("[AUTO-TTS] Skipped playback (stop requested)")
-                                    # Drop the unused wav so it does not linger
-                                    try:
-                                        Path(wav_path).unlink(missing_ok=True)
-                                    except Exception:
-                                        pass
-                            else:
-                                print("[AUTO-TTS] Synthesis failed")
+                            _prog = yield_progress("Synthesizing Speech")
+                            if _prog is not None:
+                                yield _prog
+                            cfg.TTS_BUSY = True
+                            cfg.TTS_PHASE = "generating"
+                            cfg.TTS_CURRENT_MSG_IDX = msg_idx
+                            threading.Thread(
+                                target=_tts_worker,
+                                args=(msg_idx, text),
+                                daemon=True,
+                                name=f"AutoTTSWorker-{msg_idx}",
+                            ).start()
+                            print(f"[AUTO-TTS] Background worker started for msg {msg_idx}")
                     else:
                         print("[AUTO-TTS] Text empty after cleaning")
                 else:
@@ -2027,10 +1990,6 @@ def conversation_display(
         except Exception as e:
             print(f"[AUTO-TTS] Error: {e}")
             traceback.print_exc()
-        finally:
-            cfg.TTS_PHASE = "idle"
-            cfg.TTS_CURRENT_MSG_IDX = None
-            cfg.TTS_BUSY = False
 
     # ── One-Shot mode: unload model immediately after each response ──────────
     if cfg.LOADING_MODE == "One-Shot" and cfg.MODELS_LOADED and cfg.llm is not None:
@@ -2361,7 +2320,7 @@ def launch_display():
                         panel_mode_radio = gr.Radio(
                             choices=["Sessions", "Materials"],
                             value="Sessions",
-                            label="Column Mode",
+                            label="Panel Mode",
                             elem_classes=["clean-elements"],
                         )
                         # Sessions group (history)
@@ -2663,18 +2622,12 @@ def launch_display():
                     # rules, or the defaults on a fresh install, and Restore
                     # Defaults puts the defaults back.
                     gr.Markdown("### Filter Settings")
-                    with gr.Row():
-                        filter_text = gr.Textbox(
-                            label="Custom Filter Rules (find→replace pairs)",
-                            value=get_filter_text_for_display(),
-                            lines=15, interactive=True, scale=1,
-                            placeholder="One rule per line: find_string → replace_string"
-                        )
-                        filter_key = gr.Textbox(
-                            label="Filter Key",
-                            value=get_filter_key_text(),
-                            lines=15, interactive=False, scale=1,
-                        )
+                    filter_text = gr.Textbox(
+                        label="Custom Filter Rules (find→replace pairs)",
+                        value=get_filter_text_for_display(),
+                        lines=15, interactive=True,
+                        placeholder="One rule per line: find_string → replace_string"
+                    )
 
                 gr.Markdown("---")
                 with gr.Row():
@@ -3539,8 +3492,7 @@ def launch_display():
                     ttsBtn.title = 'Generating audio...';
                     ttsBtn.dataset.ttsPhase = 'busy';
                 } else if (phase === 'stop' || phase === 'pause' || phase === 'busy') {
-                    // Pause / skip during generate or play — stops TTS only;
-                    // does not trigger Emergency Stop or cancel the response.
+                    // Skip TTS only — does not trigger Emergency Stop
                     window.cgufFire('cguf-tts-action', 'stop:' + i);
                     ttsBtn.textContent = '▶';
                     ttsBtn.title = 'Play Text-to-Speech';
@@ -3583,7 +3535,6 @@ def launch_display():
                                 target.title = 'Generating audio...';
                                 target.dataset.ttsPhase = 'busy';
                             } else if (phase === 'playing') {
-                                // Pause icon: click skips playback only (not Emergency Stop)
                                 target.textContent = '⏸';
                                 target.title = 'Pause / skip playback';
                                 target.dataset.ttsPhase = 'pause';
