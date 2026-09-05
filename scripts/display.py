@@ -612,20 +612,18 @@ FILTER_KEY_TEXT = (
     "  \\\\ = Backslash\n"
     "  \\\" = Double Quote\n"
     "  \\' = Single Quote\n"
-    "\n"
-    "Presets (row below):\n"
-    "  Markdown Filter — strip Qwen markdown → plain + * lists\n"
-    "  Minimal Filter — line endings only\n"
-    "  Restore Customised — last saved rules from preferences.json\n"
 )
 
-# Named filter presets (hard-coded; preferences.json cannot clobber these).
-# Markdown Filter = strip common Qwen markdown for clean plain-text display.
-# Minimal Filter  = line-ending normalisation only (previous default).
-# List markers use ASCII "*" only — Unicode bullets caused Windows mojibake (â¢).
 FILTER_PRESET_MINIMAL = [
     ("\r\n", "\n"),
     ("\r", "\n"),
+]
+
+FILTER_PRESET_MINIMAL_PLUS = [
+    ("\r\n", "\n"),
+    ("\r", "\n"),
+    ("- ", "* "),
+    ("* ", "* "),
 ]
 
 FILTER_PRESET_MARKDOWN = [
@@ -646,15 +644,14 @@ FILTER_PRESET_MARKDOWN = [
 FILTER_PRESETS = {
     "Markdown Filter": FILTER_PRESET_MARKDOWN,
     "Minimal Filter": FILTER_PRESET_MINIMAL,
+    "Min + Lists Filter": FILTER_PRESET_MINIMAL_PLUS,
 }
 
-# Snapshot of the last-saved / startup filter so "Restore Customised" can
-# put it back after the user previews a preset without saving.
 _SAVED_FILTER_SNAPSHOT = None
 
 
 def snapshot_saved_filter(rules=None):
-    """Remember the current (or provided) filter as the Restore Customised target."""
+    """Remember rules as the Restore Customised target."""
     global _SAVED_FILTER_SNAPSHOT
     if rules is None:
         rules = getattr(cfg, "ACTIVE_FILTER", None) or list(cfg.DEFAULT_FILTER_RULES)
@@ -663,14 +660,67 @@ def snapshot_saved_filter(rules=None):
 
 
 def get_filter_text_for_display():
-    """Return the live filter rules as editable text.
-
-    Fresh install / Preferences Restore Defaults → cfg.DEFAULT_FILTER_RULES
-    (Markdown Filter). Preset buttons load a named set into the textbox and
-    ACTIVE_FILTER; Save All Preferences persists. Restore Customised reloads
-    the last-saved snapshot.
-    """
+    """Return live filter rules as editable text."""
     return filter_list_to_text(cfg.ACTIVE_FILTER or cfg.DEFAULT_FILTER_RULES)
+
+
+def filter_list_to_text(filter_list):
+    """Convert filter list to editable text format."""
+    lines = []
+    for find, replace in filter_list:
+        find_escaped = repr(find)[1:-1]
+        replace_escaped = repr(replace)[1:-1]
+        lines.append(f"{find_escaped} -> {replace_escaped}")
+    return "\n".join(lines)
+
+
+def text_to_filter_list(text):
+    """Parse editable text format back to filter list.
+
+    Only lines that start with '#' AND do not contain an arrow are comments.
+    Heading rules like '#  -> ' / '##  -> ' are real rules and must be kept.
+
+    Leading whitespace on the line is ignored; trailing spaces on find/replace
+    are significant and preserved. Empty replace may appear as a line ending
+    in ' ->' after the textbox trims trailing spaces.
+    """
+    filter_list = []
+    for raw in (text or "").split("\n"):
+        line = raw.lstrip().rstrip("\r\n")
+        if not line.strip():
+            continue
+        stripped = line.strip()
+        if "->" not in stripped and stripped.startswith("#"):
+            continue
+        if " -> " in line:
+            left, right = line.split(" -> ", 1)
+        elif stripped.endswith(" ->"):
+            left, right = stripped[:-3], ""
+        else:
+            continue
+        try:
+            find = left.encode().decode("unicode_escape")
+            replace = right.encode().decode("unicode_escape")
+            filter_list.append((find, replace))
+        except Exception as e:
+            print(f"[FILTER] Error parsing line '{line}': {e}")
+    return filter_list
+
+
+
+
+
+def apply_filter_text(filter_text):
+    """Parse the filter panel into cfg.ACTIVE_FILTER."""
+    try:
+        cfg.ACTIVE_FILTER = text_to_filter_list(filter_text or "")
+        cfg.FILTER_MODE = (
+            "default" if list(cfg.ACTIVE_FILTER) == list(cfg.DEFAULT_FILTER_RULES) else "custom"
+        )
+        return f"Filter set ({len(cfg.ACTIVE_FILTER)} rules)"
+    except Exception as e:
+        return f"Error parsing filter: {e}"
+
 
 def apply_filter_preset(preset_name: str):
     """Load a named preset into ACTIVE_FILTER; return (textbox value, status)."""
@@ -690,7 +740,7 @@ def apply_filter_preset(preset_name: str):
 
 
 def restore_customised_filter():
-    """Reload the last-saved / startup filter snapshot into the panel + ACTIVE_FILTER."""
+    """Reload the last-saved / startup snapshot."""
     global _SAVED_FILTER_SNAPSHOT
     if not _SAVED_FILTER_SNAPSHOT:
         rules = list(getattr(cfg, "ACTIVE_FILTER", None) or cfg.DEFAULT_FILTER_RULES)
@@ -704,57 +754,8 @@ def restore_customised_filter():
     return text_out, f"Customised filter restored ({len(cfg.ACTIVE_FILTER)} rules)"
 
 
-
-
-
-def filter_list_to_text(filter_list):
-    """Convert filter list to editable text format."""
-    lines = []
-    for find, replace in filter_list:
-        find_escaped = repr(find)[1:-1]
-        replace_escaped = repr(replace)[1:-1]
-        lines.append(f"{find_escaped} -> {replace_escaped}")
-    return "\n".join(lines)
-
-
-def text_to_filter_list(text):
-    """Parse editable text format back to filter list."""
-    filter_list = []
-    for line in text.strip().split('\n'):
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        if ' -> ' in line:
-            parts = line.split(' -> ', 1)
-            if len(parts) == 2:
-                try:
-                    find = parts[0].encode().decode('unicode_escape')
-                    replace = parts[1].encode().decode('unicode_escape')
-                    filter_list.append((find, replace))
-                except Exception as e:
-                    print(f"[FILTER] Error parsing line '{line}': {e}")
-    return filter_list
-
-
-def apply_filter_text(filter_text):
-    """Parse the filter panel into cfg.ACTIVE_FILTER. Saving is the caller's job.
-
-    An empty panel is taken at face value: no rules. That is a legitimate
-    choice, so it is not quietly replaced with the defaults — Restore Defaults
-    is how the user asks for those back.
-    """
-    try:
-        cfg.ACTIVE_FILTER = text_to_filter_list(filter_text or "")
-        cfg.FILTER_MODE = (
-            "default" if cfg.ACTIVE_FILTER == list(cfg.DEFAULT_FILTER_RULES) else "custom"
-        )
-        return f"Filter set ({len(cfg.ACTIVE_FILTER)} rules)"
-    except Exception as e:
-        return f"Error parsing filter: {e}"
-
-
 def initialize_filter_from_config():
-    """Report the filter that load_config() already put in place and snapshot it."""
+    """Snapshot the filter that load_config() put in place."""
     if not getattr(cfg, "ACTIVE_FILTER", None):
         cfg.ACTIVE_FILTER = list(cfg.DEFAULT_FILTER_RULES)
         cfg.FILTER_MODE = "default"
@@ -766,6 +767,10 @@ def apply_output_filter(text):
     """Apply the active filter to output text."""
     if not cfg.ACTIVE_FILTER:
         return text
+    for find, replace in cfg.ACTIVE_FILTER:
+        text = text.replace(find, replace)
+    return text
+
     for find, replace in cfg.ACTIVE_FILTER:
         text = text.replace(find, replace)
     return text
@@ -2342,6 +2347,20 @@ def launch_display():
     .scrollable .message { white-space: normal; word-break: break-word; }
     .hide-label { display:none !important; }
     .message { line-height: 1.4 !important; }
+
+    .filter-settings-row textarea,
+    .filter-rules-box textarea,
+    .filter-key-box textarea {
+        min-height: 22em !important;
+        height: 22em !important;
+        max-height: 22em !important;
+        overflow-y: auto !important;
+        font-family: monospace !important;
+        font-size: 12px !important;
+        box-sizing: border-box !important;
+    }
+    .filter-key-box textarea { opacity: 0.85 !important; }
+
     .progress-indicator {
         font-family: monospace;
         font-size: 14px;
@@ -2352,11 +2371,7 @@ def launch_display():
         line-height: 1.6;
     }
     .model-folder-row { gap: 8px !important; }
-    .filter-key-box textarea {
-        font-family: monospace !important;
-        font-size: 12px !important;
-        opacity: 0.85 !important;
-    }
+    /* see filter-settings-row */
     .info-textbox-match {
         background-color: var(--input-background-fill) !important;
         border: 1px solid var(--border-color-primary) !important;
@@ -2909,24 +2924,25 @@ def launch_display():
                     # rules, or the defaults on a fresh install, and Restore
                     # Defaults puts the defaults back.
                     gr.Markdown("### Filter Settings")
-                    with gr.Row():
+                    with gr.Row(elem_classes=["filter-settings-row"]):
                         filter_text = gr.Textbox(
                             label="Custom Filter Rules",
                             value=get_filter_text_for_display(),
-                            lines=15, interactive=True, scale=1,
-                            placeholder="One rule per line: find_string → replace_string"
+                            lines=16, interactive=True, scale=1,
+                            placeholder="One rule per line: find_string → replace_string",
+                            elem_classes=["filter-rules-box"],
                         )
                         gr.Textbox(
                             label="Filter Keywords",
                             value=FILTER_KEY_TEXT,
-                            lines=15, interactive=False, scale=1,
-                            elem_classes=["filter-key-box"]
+                            lines=16, interactive=False, scale=1,
+                            elem_classes=["filter-key-box"],
                         )
                     with gr.Row():
                         preset_markdown_btn = gr.Button("Markdown Filter", variant="secondary", size="sm")
+                        preset_minimal_plus_btn = gr.Button("Min + Lists Filter", variant="secondary", size="sm")
                         preset_minimal_btn = gr.Button("Minimal Filter", variant="secondary", size="sm")
                         restore_custom_btn = gr.Button("Restore Customised", variant="secondary", size="sm")
-
 
                 gr.Markdown("---")
                 with gr.Row():
@@ -3662,14 +3678,19 @@ def launch_display():
             cfg.MAX_ATTACH_SLOTS   = int(max_att)         if max_att        is not None else cfg.MAX_ATTACH_SLOTS
             cfg.SESSION_LOG_HEIGHT = int(log_height)      if log_height     is not None else cfg.SESSION_LOG_HEIGHT
 
+            # Parse Custom Filter Rules box → ACTIVE_FILTER → preferences.json.
+            # That saved set becomes the new Customised snapshot.
             filter_msg = apply_filter_text(filter_text_val)
-            snapshot_saved_filter(cfg.ACTIVE_FILTER)
             result = f"{cfg.save_preferences()} — {filter_msg}"
+            snapshot_saved_filter(cfg.ACTIVE_FILTER)
+            print(f"[FILTER] Saved filter_rules to preferences.json "
+                  f"({len(cfg.ACTIVE_FILTER)} rules): {cfg.ACTIVE_FILTER}")
             return result, result, result, result
 
         def restore_preferences_page():
             """Reset every Preferences widget, filter panel included."""
             result = cfg.restore_preferences_defaults()
+            snapshot_saved_filter(cfg.ACTIVE_FILTER)
             return (
                 gr.update(value=cfg.SESSION_LOG_HEIGHT),
                 gr.update(value=cfg.MAX_ATTACH_SLOTS),
@@ -3700,7 +3721,7 @@ def launch_display():
             outputs=_prefs_widgets + _status_outputs
         )
 
-        # Filter preset / restore-customised buttons
+
         def _load_preset_markdown():
             text_out, status = apply_filter_preset("Markdown Filter")
             return text_out, status, status, status, status
@@ -3709,27 +3730,31 @@ def launch_display():
             text_out, status = apply_filter_preset("Minimal Filter")
             return text_out, status, status, status, status
 
+        def _load_preset_minimal_plus():
+            text_out, status = apply_filter_preset("Min + Lists Filter")
+            return text_out, status, status, status, status
+
         def _restore_customised():
             text_out, status = restore_customised_filter()
             return text_out, status, status, status, status
 
         preset_markdown_btn.click(
-            fn=_load_preset_markdown,
-            inputs=[],
+            fn=_load_preset_markdown, inputs=[],
             outputs=[filter_text] + _status_outputs,
         )
         preset_minimal_btn.click(
-            fn=_load_preset_minimal,
-            inputs=[],
+            fn=_load_preset_minimal, inputs=[],
+            outputs=[filter_text] + _status_outputs,
+        )
+        preset_minimal_plus_btn.click(
+            fn=_load_preset_minimal_plus, inputs=[],
             outputs=[filter_text] + _status_outputs,
         )
         restore_custom_btn.click(
-            fn=_restore_customised,
-            inputs=[],
+            fn=_restore_customised, inputs=[],
             outputs=[filter_text] + _status_outputs,
         )
 
-        
 
         # Attach files handlers
         attach_files.upload(
