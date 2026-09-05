@@ -1953,7 +1953,20 @@ def create_config_jsons():
         "bleep_on_events": False,
         "print_raw_output": False,
         # Filter settings, as [find, replace] pairs
-        "filter_rules": [["\r\n", "\n"], ["\r", "\n"]],
+        "filter_rules": [
+            ["\r\n", "\n"],
+            ["\r", "\n"],
+            ["###### ", ""],
+            ["##### ", ""],
+            ["#### ", ""],
+            ["### ", ""],
+            ["## ", ""],
+            ["# ", ""],
+            ["**", ""],
+            ["__", ""],
+            ["- ", "* "],
+            ["* ", "* "],
+        ],
     }
 
     def write_settings(filename, section, defaults):

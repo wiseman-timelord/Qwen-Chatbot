@@ -612,18 +612,99 @@ FILTER_KEY_TEXT = (
     "  \\\\ = Backslash\n"
     "  \\\" = Double Quote\n"
     "  \\' = Single Quote\n"
+    "\n"
+    "Presets (row below):\n"
+    "  Markdown Filter — strip Qwen markdown → plain + * lists\n"
+    "  Minimal Filter — line endings only\n"
+    "  Restore Customised — last saved rules from preferences.json\n"
 )
+
+# Named filter presets (hard-coded; preferences.json cannot clobber these).
+# Markdown Filter = strip common Qwen markdown for clean plain-text display.
+# Minimal Filter  = line-ending normalisation only (previous default).
+# List markers use ASCII "*" only — Unicode bullets caused Windows mojibake (â¢).
+FILTER_PRESET_MINIMAL = [
+    ("\r\n", "\n"),
+    ("\r", "\n"),
+]
+
+FILTER_PRESET_MARKDOWN = [
+    ("\r\n", "\n"),
+    ("\r", "\n"),
+    ("###### ", ""),
+    ("##### ", ""),
+    ("#### ", ""),
+    ("### ", ""),
+    ("## ", ""),
+    ("# ", ""),
+    ("**", ""),
+    ("__", ""),
+    ("- ", "* "),
+    ("* ", "* "),
+]
+
+FILTER_PRESETS = {
+    "Markdown Filter": FILTER_PRESET_MARKDOWN,
+    "Minimal Filter": FILTER_PRESET_MINIMAL,
+}
+
+# Snapshot of the last-saved / startup filter so "Restore Customised" can
+# put it back after the user previews a preset without saving.
+_SAVED_FILTER_SNAPSHOT = None
+
+
+def snapshot_saved_filter(rules=None):
+    """Remember the current (or provided) filter as the Restore Customised target."""
+    global _SAVED_FILTER_SNAPSHOT
+    if rules is None:
+        rules = getattr(cfg, "ACTIVE_FILTER", None) or list(cfg.DEFAULT_FILTER_RULES)
+    _SAVED_FILTER_SNAPSHOT = [tuple(r) for r in rules]
+    print(f"[FILTER] Customised snapshot set ({len(_SAVED_FILTER_SNAPSHOT)} rules)")
 
 
 def get_filter_text_for_display():
     """Return the live filter rules as editable text.
 
-    One panel, no presets. A fresh install shows cfg.DEFAULT_FILTER_RULES; once
-    the user edits and presses Save All Preferences their rules are what comes
-    back, because they are stored in preferences.json alongside the rest of the
-    page. Restore Defaults puts cfg.DEFAULT_FILTER_RULES back.
+    Fresh install / Preferences Restore Defaults → cfg.DEFAULT_FILTER_RULES
+    (Markdown Filter). Preset buttons load a named set into the textbox and
+    ACTIVE_FILTER; Save All Preferences persists. Restore Customised reloads
+    the last-saved snapshot.
     """
     return filter_list_to_text(cfg.ACTIVE_FILTER or cfg.DEFAULT_FILTER_RULES)
+
+def apply_filter_preset(preset_name: str):
+    """Load a named preset into ACTIVE_FILTER; return (textbox value, status)."""
+    rules = FILTER_PRESETS.get(preset_name)
+    if rules is None:
+        return get_filter_text_for_display(), f"Unknown preset: {preset_name}"
+    cfg.ACTIVE_FILTER = list(rules)
+    cfg.FILTER_MODE = (
+        "default" if list(cfg.ACTIVE_FILTER) == list(cfg.DEFAULT_FILTER_RULES) else "custom"
+    )
+    text_out = filter_list_to_text(cfg.ACTIVE_FILTER)
+    print(f"[FILTER] Preset applied: {preset_name} ({len(cfg.ACTIVE_FILTER)} rules)")
+    return text_out, (
+        f"Preset loaded: {preset_name} ({len(cfg.ACTIVE_FILTER)} rules) "
+        f"— Save Preferences to keep"
+    )
+
+
+def restore_customised_filter():
+    """Reload the last-saved / startup filter snapshot into the panel + ACTIVE_FILTER."""
+    global _SAVED_FILTER_SNAPSHOT
+    if not _SAVED_FILTER_SNAPSHOT:
+        rules = list(getattr(cfg, "ACTIVE_FILTER", None) or cfg.DEFAULT_FILTER_RULES)
+        _SAVED_FILTER_SNAPSHOT = [tuple(r) for r in rules]
+    cfg.ACTIVE_FILTER = list(_SAVED_FILTER_SNAPSHOT)
+    cfg.FILTER_MODE = (
+        "default" if list(cfg.ACTIVE_FILTER) == list(cfg.DEFAULT_FILTER_RULES) else "custom"
+    )
+    text_out = filter_list_to_text(cfg.ACTIVE_FILTER)
+    print(f"[FILTER] Restored customised snapshot ({len(cfg.ACTIVE_FILTER)} rules)")
+    return text_out, f"Customised filter restored ({len(cfg.ACTIVE_FILTER)} rules)"
+
+
+
 
 
 def filter_list_to_text(filter_list):
@@ -673,10 +754,11 @@ def apply_filter_text(filter_text):
 
 
 def initialize_filter_from_config():
-    """Report the filter that load_config() already put in place."""
+    """Report the filter that load_config() already put in place and snapshot it."""
     if not getattr(cfg, "ACTIVE_FILTER", None):
         cfg.ACTIVE_FILTER = list(cfg.DEFAULT_FILTER_RULES)
         cfg.FILTER_MODE = "default"
+    snapshot_saved_filter(cfg.ACTIVE_FILTER)
     print(f"[FILTER] Using {cfg.FILTER_MODE} filter ({len(cfg.ACTIVE_FILTER)} rules)")
 
 
@@ -2840,6 +2922,11 @@ def launch_display():
                             lines=15, interactive=False, scale=1,
                             elem_classes=["filter-key-box"]
                         )
+                    with gr.Row():
+                        preset_markdown_btn = gr.Button("Markdown Filter", variant="secondary", size="sm")
+                        preset_minimal_btn = gr.Button("Minimal Filter", variant="secondary", size="sm")
+                        restore_custom_btn = gr.Button("Restore Customised", variant="secondary", size="sm")
+
 
                 gr.Markdown("---")
                 with gr.Row():
@@ -3576,6 +3663,7 @@ def launch_display():
             cfg.SESSION_LOG_HEIGHT = int(log_height)      if log_height     is not None else cfg.SESSION_LOG_HEIGHT
 
             filter_msg = apply_filter_text(filter_text_val)
+            snapshot_saved_filter(cfg.ACTIVE_FILTER)
             result = f"{cfg.save_preferences()} — {filter_msg}"
             return result, result, result, result
 
@@ -3611,6 +3699,37 @@ def launch_display():
             inputs=[],
             outputs=_prefs_widgets + _status_outputs
         )
+
+        # Filter preset / restore-customised buttons
+        def _load_preset_markdown():
+            text_out, status = apply_filter_preset("Markdown Filter")
+            return text_out, status, status, status, status
+
+        def _load_preset_minimal():
+            text_out, status = apply_filter_preset("Minimal Filter")
+            return text_out, status, status, status, status
+
+        def _restore_customised():
+            text_out, status = restore_customised_filter()
+            return text_out, status, status, status, status
+
+        preset_markdown_btn.click(
+            fn=_load_preset_markdown,
+            inputs=[],
+            outputs=[filter_text] + _status_outputs,
+        )
+        preset_minimal_btn.click(
+            fn=_load_preset_minimal,
+            inputs=[],
+            outputs=[filter_text] + _status_outputs,
+        )
+        restore_custom_btn.click(
+            fn=_restore_customised,
+            inputs=[],
+            outputs=[filter_text] + _status_outputs,
+        )
+
+        
 
         # Attach files handlers
         attach_files.upload(

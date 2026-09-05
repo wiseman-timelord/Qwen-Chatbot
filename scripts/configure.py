@@ -54,6 +54,18 @@ GRADIO_VERSION = "5.x"     # Gradio 5.x — written by installer; default 5.x fo
 DEFAULT_FILTER_RULES = [
     ("\r\n", "\n"),
     ("\r", "\n"),
+    # Markdown Filter (default): strip common Qwen markdown for clean plain text
+    # List markers use ASCII "*" (not Unicode bullet) to avoid Windows mojibake.
+    ("###### ", ""),
+    ("##### ", ""),
+    ("#### ", ""),
+    ("### ", ""),
+    ("## ", ""),
+    ("# ", ""),
+    ("**", ""),
+    ("__", ""),
+    ("- ", "* "),
+    ("* ", "* "),
 ]
 
 ACTIVE_FILTER = [tuple(rule) for rule in DEFAULT_FILTER_RULES]
