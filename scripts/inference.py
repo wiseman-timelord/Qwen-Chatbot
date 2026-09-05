@@ -18,6 +18,7 @@ from scripts.configure import (
     LOADED_CONTEXT_SIZE, CPU_THREADS,
     SELECTED_GPU, set_status, save_config
 )
+# LOADED_BATCH_SIZE is accessed via cfg.LOADED_BATCH_SIZE (set on load / cleared on unload)
 # REMOVED: from scripts.utility import beep, short_path (causes circular import)
 
 # ============================================================================
@@ -924,6 +925,7 @@ def load_models(model_folder, model, vram_size, llm_state, models_loaded_state):
         cfg.GPU_LAYERS          = gpu_layers
         cfg.MODEL_NAME          = model
         cfg.LOADED_CONTEXT_SIZE = effective_ctx
+        cfg.LOADED_BATCH_SIZE   = kwargs.get("n_batch", BATCH_SIZE)
 
         status_parts = ["Model ready"]
         if is_vision:    status_parts.append("vision")
@@ -1069,6 +1071,7 @@ def unload_models(llm_state, models_loaded_state):
         cfg.set_status("Unloaded", console=True)
         cfg.GPU_LAYERS = 0
         cfg.LOADED_CONTEXT_SIZE = None
+        cfg.LOADED_BATCH_SIZE = None
         return "Model unloaded successfully.", None, False
 
     except Exception as e:

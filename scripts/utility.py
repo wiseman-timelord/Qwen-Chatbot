@@ -225,13 +225,13 @@ def summarize_session(messages):
                     candidates.append(chunk.text)
 
             if candidates:
-                label = candidates[0][:40]
+                label = candidates[0][:50]
                 return label.strip()
         except Exception:
             pass
 
-    words = text.split()[:6]
-    return ' '.join(words)[:40] if words else "Session"
+    words = text.split()[:8]
+    return ' '.join(words)[:50] if words else "Session"
 
 
 def get_saved_sessions():

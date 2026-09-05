@@ -596,6 +596,25 @@ def format_response(output: str) -> str:
 # OUTPUT FILTERING FUNCTIONS
 # =============================================================================
 
+# Read-only reference shown beside the filter panel. Mirrors the escape
+# sequences that text_to_filter_list() actually understands (it decodes each
+# side with 'unicode_escape'), so this key stays accurate as long as that
+# decode call doesn't change.
+FILTER_KEY_TEXT = (
+    "Format:\n"
+    "  find -> replace\n"
+    "  (one rule per line)\n"
+    "\n"
+    "Escape Codes:\n"
+    "  \\n = New Line\n"
+    "  \\t = Tab\n"
+    "  \\r = Carriage Return\n"
+    "  \\\\ = Backslash\n"
+    "  \\\" = Double Quote\n"
+    "  \\' = Single Quote\n"
+)
+
+
 def get_filter_text_for_display():
     """Return the live filter rules as editable text.
 
@@ -732,6 +751,7 @@ def handle_load_model(model_name, model_folder, vram_size, ctx_size, gpu, cpu, c
             cfg.MODELS_LOADED = True
             cfg.llm = new_llm
             cfg.LOADED_CONTEXT_SIZE = int(ctx_size)
+            cfg.LOADED_BATCH_SIZE = cfg.BATCH_SIZE
             beep()
             status_msg = f"✅ Model loaded: {model_name} ({cfg.LOADED_CONTEXT_SIZE} ctx)"
             input_interactive = True   # ← always interactive when a model is selected
@@ -774,6 +794,7 @@ def handle_unload_model(llm_state, models_loaded_state):
         cfg.llm = new_llm
         cfg.GPU_LAYERS = 0
         cfg.LOADED_CONTEXT_SIZE = None
+        cfg.LOADED_BATCH_SIZE = None
         beep()
         status_msg = "✅ Model unloaded successfully."
         return (
@@ -1465,6 +1486,43 @@ def conversation_display(
         )
         return
 
+    # CONTEXT / BATCH SIZE MISMATCH → FORCE RELOAD
+    # Interaction-page quick toggles update cfg.CONTEXT_SIZE / cfg.BATCH_SIZE
+    # immediately. If a model is already loaded with different sizes, unload
+    # first so the subsequent auto-load path picks up the new values.
+    _ctx_mismatch = (
+        cfg.MODELS_LOADED and cfg.llm is not None
+        and cfg.LOADED_CONTEXT_SIZE is not None
+        and int(cfg.LOADED_CONTEXT_SIZE) != int(cfg.CONTEXT_SIZE)
+    )
+    _batch_mismatch = (
+        cfg.MODELS_LOADED and cfg.llm is not None
+        and getattr(cfg, "LOADED_BATCH_SIZE", None) is not None
+        and int(cfg.LOADED_BATCH_SIZE) != int(cfg.BATCH_SIZE)
+    )
+    if _ctx_mismatch or _batch_mismatch:
+        print(f"[CONTROLS] Size mismatch detected "
+              f"(loaded ctx={cfg.LOADED_CONTEXT_SIZE} batch={getattr(cfg,'LOADED_BATCH_SIZE',None)} "
+              f"→ desired ctx={cfg.CONTEXT_SIZE} batch={cfg.BATCH_SIZE}). Reloading…")
+        try:
+            from scripts.inference import unload_models as _unload
+            _status, llm_state, models_loaded_state = _unload(llm_state, models_loaded_state)
+            cfg.llm = llm_state
+            cfg.MODELS_LOADED = models_loaded_state
+            cfg.LOADED_CONTEXT_SIZE = None
+            cfg.LOADED_BATCH_SIZE = None
+            print(f"[CONTROLS] Unload before re-apply: {_status}")
+        except Exception as _e:
+            print(f"[CONTROLS] Unload failed: {_e}")
+
+    # Persist any Controls-panel changes (Context/Batch/Temp/Repeat) to JSON
+    # so they survive restart. Inference already reads live cfg globals, so
+    # Temperature/Repeat take effect without a model reload.
+    try:
+        cfg.save_config()
+    except Exception as _e:
+        print(f"[CONTROLS] Could not persist settings on Send: {_e}")
+
     # AUTO-LOAD MODEL IF NOT LOADED YET
     # Use globals as the authoritative source — Gradio state can be stale after
     # a One-Shot unload or inline-edit re-submit (the state the UI holds may
@@ -1543,6 +1601,7 @@ def conversation_display(
                 cfg.MODELS_LOADED = True
                 cfg.llm = new_llm
                 cfg.LOADED_CONTEXT_SIZE = cfg.CONTEXT_SIZE
+                cfg.LOADED_BATCH_SIZE = cfg.BATCH_SIZE
                 if cfg.LOADING_MODE == "One-Shot":
                     cfg.ONE_SHOT_LOADING = False
 
@@ -1951,9 +2010,14 @@ def conversation_display(
     global _last_response_time
     _last_response_time = time.time()
 
-    # Auto-TTS: NON-BLOCKING background worker (same path as manual ▶).
-    # Never play on the Gradio generator thread — that freezes Emergency Stop
-    # and the per-message ⏸ button until audio ends.
+    # Auto-TTS with progress visualization.
+    #
+    # Work runs on a background worker so pause / Emergency Stop stay live.
+    # This generator only *watches* cfg.TTS_PHASE and yields progress updates:
+    #   "Synthesizing Speech" while phase == generating
+    #   "Playing Audio"       while phase == playing
+    # After the response is already saved, a stop must NOT call _abort_to_edit —
+    # it only skips remaining TTS and finishes the turn normally.
     if tts_speak_enabled and cfg.TTS_ENABLED:
         try:
             bot_msgs = [m for m in session_messages if m.get("role") == "assistant"]
@@ -1970,9 +2034,7 @@ def conversation_display(
                         if cfg.TTS_BUSY:
                             print("[AUTO-TTS] TTS already busy — skipping auto-speak")
                         else:
-                            _prog = yield_progress("Synthesizing Speech")
-                            if _prog is not None:
-                                yield _prog
+                            # Kick off the same worker used by the per-message ▶ button
                             cfg.TTS_BUSY = True
                             cfg.TTS_PHASE = "generating"
                             cfg.TTS_CURRENT_MSG_IDX = msg_idx
@@ -1983,6 +2045,58 @@ def conversation_display(
                                 name=f"AutoTTSWorker-{msg_idx}",
                             ).start()
                             print(f"[AUTO-TTS] Background worker started for msg {msg_idx}")
+
+                            def _tts_progress_tuple(phase_name):
+                                """Progress UI for TTS phases; keeps Emergency Stop visible."""
+                                try:
+                                    step = phase_list.index(phase_name)
+                                except ValueError:
+                                    step = 0
+                                return (
+                                    get_chatbot_output(session_tuples, session_messages),
+                                    session_messages,
+                                    "",
+                                    gr.update(visible=False),
+                                    gr.update(
+                                        visible=True,
+                                        value=build_progress_html(
+                                            step, web_search_enabled, tts_speak_enabled
+                                        ),
+                                    ),
+                                    *update_action_buttons("input_submitted", True),
+                                    cancel_flag,
+                                    loaded_files,
+                                    "input_submitted",
+                                    llm_state,
+                                    models_loaded_state,
+                                )
+
+                            # ── Synthesizing Speech ──────────────────────────
+                            while cfg.TTS_BUSY and cfg.TTS_PHASE == "generating":
+                                if _cancel_event.is_set() or is_tts_stop_requested():
+                                    stop_speaking()
+                                    print("[AUTO-TTS] Stopped during synthesis")
+                                    break
+                                yield _tts_progress_tuple("Synthesizing Speech")
+                                time.sleep(0.25)
+
+                            # ── Playing Audio ────────────────────────────────
+                            while cfg.TTS_BUSY and cfg.TTS_PHASE == "playing":
+                                if _cancel_event.is_set() or is_tts_stop_requested():
+                                    stop_speaking()
+                                    print("[AUTO-TTS] Stopped during playback")
+                                    break
+                                yield _tts_progress_tuple("Playing Audio")
+                                time.sleep(0.25)
+
+                            # Ensure flags are clean if user stopped mid-TTS
+                            if _cancel_event.is_set() or is_tts_stop_requested():
+                                stop_speaking()
+                                cfg.TTS_PHASE = "idle"
+                                cfg.TTS_CURRENT_MSG_IDX = None
+                                cfg.TTS_BUSY = False
+                            else:
+                                print(f"[AUTO-TTS] Completed for msg {msg_idx}")
                     else:
                         print("[AUTO-TTS] Text empty after cleaning")
                 else:
@@ -1990,6 +2104,9 @@ def conversation_display(
         except Exception as e:
             print(f"[AUTO-TTS] Error: {e}")
             traceback.print_exc()
+            cfg.TTS_PHASE = "idle"
+            cfg.TTS_CURRENT_MSG_IDX = None
+            cfg.TTS_BUSY = False
 
     # ── One-Shot mode: unload model immediately after each response ──────────
     if cfg.LOADING_MODE == "One-Shot" and cfg.MODELS_LOADED and cfg.llm is not None:
@@ -2095,6 +2212,33 @@ def launch_display():
     }
     .clean-elements { gap: 4px !important; margin-bottom: 4px !important }
     .clean-elements-normbot { gap: 4px !important; margin-bottom: 20px !important }
+    /* Keep Session / Materials / Context on a single line */
+    .panel-mode-radio .wrap, .panel-mode-radio label,
+    .panel-mode-radio .form, .panel-mode-radio .svelte-1gfkn6j {
+        flex-wrap: nowrap !important;
+        white-space: nowrap !important;
+    }
+    .panel-mode-radio {
+        min-width: 320px !important;
+    }
+    .panel-mode-radio label span, .panel-mode-radio .label-wrap {
+        white-space: nowrap !important;
+        font-size: 0.92em !important;
+    }
+    /* Hide the live numeric input that Gradio places next to each slider;
+       the exact value is shown only in the Input Value / Output Value boxes. */
+    .hide-slider-number input[type="number"],
+    .hide-slider-number .number-input,
+    .hide-slider-number .wrap > input[type="number"] {
+        display: none !important;
+        width: 0 !important;
+        min-width: 0 !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        border: none !important;
+        opacity: 0 !important;
+        pointer-events: none !important;
+    }
     .send-button-green { background-color: green !important; color: white !important }
     .send-button-orange { background-color: orange !important; color: white !important }
     .send-button-red { background-color: red !important; color: white !important }
@@ -2116,6 +2260,11 @@ def launch_display():
         line-height: 1.6;
     }
     .model-folder-row { gap: 8px !important; }
+    .filter-key-box textarea {
+        font-family: monospace !important;
+        font-size: 12px !important;
+        opacity: 0.85 !important;
+    }
     .info-textbox-match {
         background-color: var(--input-background-fill) !important;
         border: 1px solid var(--border-color-primary) !important;
@@ -2286,7 +2435,7 @@ def launch_display():
             cancel_flag=gr.State(False),
             interaction_phase=gr.State("waiting_for_input"),
             is_reasoning_model=gr.State(False),
-            # Panel mode: "Sessions" (history) or "Materials" (attachments)
+            # Column mode: "Sessions" | "Materials" | "Controls"
             panel_mode=gr.State("Sessions"),
             left_expanded_state=gr.State(True),
             model_settings=gr.State({}),
@@ -2311,19 +2460,18 @@ def launch_display():
         with gr.Tabs():
             with gr.Tab("Interactions"):
                 with gr.Row():
-                    # ── LEFT PANEL (Sessions / Materials) ─────────────────────
-                    # Expanded view: Panel Mode switch + either history slots
-                    # or attachment slots. Collapsed view: compact [ <-> ]
-                    # [ New ] [ Add ] strip that restores the last mode.
-                    with gr.Column(visible=True, min_width=300, elem_classes=["clean-elements"]) as left_column_expanded:
+                    # ── LEFT COLUMN (Sessions / Materials / Controls) ─────────
+                    # Expanded view: Column Mode switch + one of three groups.
+                    # Collapsed view: compact [ <-> ] [ New ] [ Add ] strip.
+                    with gr.Column(visible=True, min_width=360, elem_classes=["clean-elements"]) as left_column_expanded:
                         toggle_button_left_expanded = gr.Button(">-------<", variant="secondary")
                         panel_mode_radio = gr.Radio(
-                            choices=["Sessions", "Materials"],
+                            choices=["Sessions", "Materials", "Controls"],
                             value="Sessions",
-                            label="Panel Mode",
-                            elem_classes=["clean-elements"],
+                            label="Column Mode",
+                            elem_classes=["clean-elements", "panel-mode-radio"],
                         )
-                        # Sessions group (history)
+                        # Sessions group (history slots)
                         with gr.Group(visible=True) as history_slots_group:
                             start_new_session_btn = gr.Button("Start New Session..", variant="secondary")
                             buttons["session"] = [
@@ -2346,6 +2494,49 @@ def launch_display():
                                 gr.Button("Attach Slot Free", variant="huggingface", visible=False)
                                 for _ in range(cfg.MAX_POSSIBLE_ATTACH_SLOTS)
                             ]
+                        # Controls group — dual-sited with Configuration page.
+                        # Context/Batch: snap on release; model reloads on next
+                        # Send if sizes differ from the loaded model.
+                        # Temperature/Repeat Penalty: inference-only args, take
+                        # effect immediately (no reload); persisted on Send.
+                        with gr.Group(visible=False) as context_group:
+                            gr.Markdown("**Quick Controls**  \nContext/Batch changes require model reload.")
+                            interaction_ctx_slider = gr.Slider(
+                                minimum=min(cfg.CTX_OPTIONS),
+                                maximum=max(cfg.CTX_OPTIONS),
+                                step=1024,
+                                value=cfg.CONTEXT_SIZE,
+                                label="Input/Context Length",
+                                interactive=True,
+                                elem_classes=["clean-elements"],
+                            )
+                            interaction_batch_slider = gr.Slider(
+                                minimum=min(cfg.BATCH_OPTIONS),
+                                maximum=max(cfg.BATCH_OPTIONS),
+                                step=128,
+                                value=cfg.BATCH_SIZE,
+                                label="Output/Batch Size",
+                                interactive=True,
+                                elem_classes=["clean-elements"],
+                            )
+                            interaction_temp_slider = gr.Slider(
+                                minimum=min(cfg.TEMP_OPTIONS),
+                                maximum=max(cfg.TEMP_OPTIONS),
+                                step=0.01,
+                                value=cfg.TEMPERATURE,
+                                label="Temperature/Color",
+                                interactive=True,
+                                elem_classes=["clean-elements"],
+                            )
+                            interaction_repeat_slider = gr.Slider(
+                                minimum=min(cfg.REPEAT_OPTIONS),
+                                maximum=max(cfg.REPEAT_OPTIONS),
+                                step=0.05,
+                                value=cfg.REPEAT_PENALTY,
+                                label="Repeat Penalty",
+                                interactive=True,
+                                elem_classes=["clean-elements"],
+                            )
 
                     with gr.Column(visible=False, min_width=60, elem_classes=["clean-elements"]) as left_column_collapsed:
                         toggle_button_left_collapsed = gr.Button("<->", variant="secondary")
@@ -2622,12 +2813,19 @@ def launch_display():
                     # rules, or the defaults on a fresh install, and Restore
                     # Defaults puts the defaults back.
                     gr.Markdown("### Filter Settings")
-                    filter_text = gr.Textbox(
-                        label="Custom Filter Rules (find→replace pairs)",
-                        value=get_filter_text_for_display(),
-                        lines=15, interactive=True,
-                        placeholder="One rule per line: find_string → replace_string"
-                    )
+                    with gr.Row():
+                        filter_text = gr.Textbox(
+                            label="Custom Filter Rules",
+                            value=get_filter_text_for_display(),
+                            lines=15, interactive=True, scale=3,
+                            placeholder="One rule per line: find_string → replace_string"
+                        )
+                        gr.Textbox(
+                            label="Filter Keywords",
+                            value=FILTER_KEY_TEXT,
+                            lines=15, interactive=False, scale=1,
+                            elem_classes=["filter-key-box"]
+                        )
 
                 gr.Markdown("---")
                 with gr.Row():
@@ -3001,7 +3199,7 @@ def launch_display():
             outputs=[debug_display, info_status]
         )
 
-        # Panel expand/collapse + Sessions/Materials mode switch
+        # Panel expand/collapse + Sessions/Materials/Controls column-mode switch
         def toggle_left_panel(current_state):
             new_state = not current_state
             return new_state, gr.update(visible=new_state), gr.update(visible=not new_state)
@@ -3018,18 +3216,130 @@ def launch_display():
         )
 
         def switch_panel_mode(mode):
-            """Show Sessions (history) or Materials (attachments) group."""
-            is_sessions = (mode == "Sessions")
+            """Show Sessions, Materials, or Controls group."""
             return (
                 mode,
-                gr.update(visible=is_sessions),   # history_slots_group
-                gr.update(visible=not is_sessions),  # attach_group
+                gr.update(visible=(mode == "Sessions")),    # history_slots_group
+                gr.update(visible=(mode == "Materials")),   # attach_group
+                gr.update(visible=(mode == "Controls")),    # context_group
             )
 
         panel_mode_radio.change(
             fn=switch_panel_mode,
             inputs=[panel_mode_radio],
-            outputs=[states["panel_mode"], history_slots_group, attach_group]
+            outputs=[states["panel_mode"], history_slots_group, attach_group, context_group]
+        )
+
+        # Controls-page quick toggles (dual-sited with Configuration)
+        # Context/Batch snap to nearest valid option on release → may force reload.
+        # Temperature/Repeat apply immediately (inference args, no reload).
+        def _snap_to_options(val, options):
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                return options[0] if options else 0
+            return min(options, key=lambda x: abs(float(x) - v))
+
+        def _on_ctx_slider(val):
+            snapped = int(_snap_to_options(val, cfg.CTX_OPTIONS))
+            cfg.CONTEXT_SIZE = snapped
+            print(f"[CONTROLS] Input (Context) set to {snapped}")
+            if (cfg.MODELS_LOADED and cfg.LOADED_CONTEXT_SIZE is not None
+                    and int(cfg.LOADED_CONTEXT_SIZE) != snapped):
+                print(f"[CONTROLS] Differs from loaded ({cfg.LOADED_CONTEXT_SIZE}) — will reload on next Send")
+            return gr.update(value=snapped), gr.update(value=snapped)
+
+        def _on_batch_slider(val):
+            snapped = int(_snap_to_options(val, cfg.BATCH_OPTIONS))
+            cfg.BATCH_SIZE = snapped
+            print(f"[CONTROLS] Output (Batch) set to {snapped}")
+            loaded_b = getattr(cfg, "LOADED_BATCH_SIZE", None)
+            if cfg.MODELS_LOADED and loaded_b is not None and int(loaded_b) != snapped:
+                print(f"[CONTROLS] Differs from loaded ({loaded_b}) — will reload on next Send")
+            return gr.update(value=snapped), gr.update(value=snapped)
+
+        def _on_temp_slider(val):
+            snapped = float(_snap_to_options(val, cfg.TEMP_OPTIONS))
+            cfg.TEMPERATURE = snapped
+            print(f"[CONTROLS] Temperature set to {snapped}")
+            return gr.update(value=snapped), gr.update(value=snapped)
+
+        def _on_repeat_slider(val):
+            snapped = float(_snap_to_options(val, cfg.REPEAT_OPTIONS))
+            cfg.REPEAT_PENALTY = snapped
+            print(f"[CONTROLS] Repeat Penalty set to {snapped}")
+            return gr.update(value=snapped), gr.update(value=snapped)
+
+        # Snap only on mouse release — avoids continuous Gradio re-renders.
+        interaction_ctx_slider.release(
+            fn=_on_ctx_slider,
+            inputs=[interaction_ctx_slider],
+            outputs=[interaction_ctx_slider, ctx_size]
+        )
+        interaction_batch_slider.release(
+            fn=_on_batch_slider,
+            inputs=[interaction_batch_slider],
+            outputs=[interaction_batch_slider, batch_size]
+        )
+        interaction_temp_slider.release(
+            fn=_on_temp_slider,
+            inputs=[interaction_temp_slider],
+            outputs=[interaction_temp_slider, temperature]
+        )
+        interaction_repeat_slider.release(
+            fn=_on_repeat_slider,
+            inputs=[interaction_repeat_slider],
+            outputs=[interaction_repeat_slider, repeat_penalty]
+        )
+
+        # Config-page → Controls-page live sync
+        def _on_config_ctx_change(val):
+            if val is None:
+                return gr.update()
+            new_val = int(val)
+            cfg.CONTEXT_SIZE = new_val
+            return gr.update(value=new_val)
+
+        def _on_config_batch_change(val):
+            if val is None:
+                return gr.update()
+            new_val = int(val)
+            cfg.BATCH_SIZE = new_val
+            return gr.update(value=new_val)
+
+        def _on_config_temp_change(val):
+            if val is None:
+                return gr.update()
+            new_val = float(val)
+            cfg.TEMPERATURE = new_val
+            return gr.update(value=new_val)
+
+        def _on_config_repeat_change(val):
+            if val is None:
+                return gr.update()
+            new_val = float(val)
+            cfg.REPEAT_PENALTY = new_val
+            return gr.update(value=new_val)
+
+        ctx_size.change(
+            fn=_on_config_ctx_change,
+            inputs=[ctx_size],
+            outputs=[interaction_ctx_slider]
+        )
+        batch_size.change(
+            fn=_on_config_batch_change,
+            inputs=[batch_size],
+            outputs=[interaction_batch_slider]
+        )
+        temperature.change(
+            fn=_on_config_temp_change,
+            inputs=[temperature],
+            outputs=[interaction_temp_slider]
+        )
+        repeat_penalty.change(
+            fn=_on_config_repeat_change,
+            inputs=[repeat_penalty],
+            outputs=[interaction_repeat_slider]
         )
 
         # Web Search toggle
@@ -3191,9 +3501,12 @@ def launch_display():
             cfg.MAX_TTS_LENGTH = int(tts_max_len_val) if tts_max_len_val is not None else cfg.MAX_TTS_LENGTH
 
             result = cfg.save_config()
+            # Keep Controls-page sliders in sync with the saved values
             return ((result, result, result, result)
                     + _model_visibility()
-                    + (get_user_input_state(),))
+                    + (get_user_input_state(),)
+                    + (gr.update(value=cfg.CONTEXT_SIZE), gr.update(value=cfg.BATCH_SIZE),
+                       gr.update(value=cfg.TEMPERATURE), gr.update(value=cfg.REPEAT_PENALTY)))
 
         def restore_configuration_page():
             """Reset every Configuration widget from cfg.CONFIGURATION_DEFAULTS."""
@@ -3214,7 +3527,10 @@ def launch_display():
                 gr.update(value=cfg.TTS_VOICE_NAME or "Default"),
                 gr.update(value=cfg.MAX_TTS_LENGTH),
                 result, result, result, result,
-            ) + _model_visibility() + (get_user_input_state(),)
+            ) + _model_visibility() + (get_user_input_state(),) + (
+                gr.update(value=cfg.CONTEXT_SIZE), gr.update(value=cfg.BATCH_SIZE),
+                gr.update(value=cfg.TEMPERATURE), gr.update(value=cfg.REPEAT_PENALTY)
+            )
 
         _config_inputs = [
             layer_allocation_radio, cpu_select, cpu_threads, gpu_select, vram_size,
@@ -3231,10 +3547,16 @@ def launch_display():
 
         _user_input_output = [conversation_components["user_input"]]
 
+        # Order: ctx, batch, temperature, repeat_penalty sliders
+        _interaction_ctx_outputs = [
+            interaction_ctx_slider, interaction_batch_slider,
+            interaction_temp_slider, interaction_repeat_slider,
+        ]
+
         save_config_btn.click(
             fn=save_configuration_page,
             inputs=_config_inputs,
-            outputs=_status_outputs + _model_vis_outputs + _user_input_output
+            outputs=_status_outputs + _model_vis_outputs + _user_input_output + _interaction_ctx_outputs
         )
         restore_config_btn.click(
             fn=restore_configuration_page,
@@ -3243,7 +3565,7 @@ def launch_display():
                 layer_allocation_radio, cpu_select, cpu_threads, gpu_select, vram_size,
                 sound_sample_rate, model_dropdown, ctx_size, batch_size, temperature,
                 repeat_penalty, loading_mode_radio, tts_voice, tts_max_len,
-            ] + _status_outputs + _model_vis_outputs + _user_input_output
+            ] + _status_outputs + _model_vis_outputs + _user_input_output + _interaction_ctx_outputs
         )
 
         # ── Preferences page: save / restore ─────────────────────────────────

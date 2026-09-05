@@ -32,6 +32,7 @@ WINDOWS_VERSION = None  # Windows-specific version (10, 11)
 EMBEDDING_BACKEND = "sentence_transformers"
 EMBEDDING_MODEL_NAME = "BAAI/bge-small-en-v1.5"
 LOADED_CONTEXT_SIZE = None
+LOADED_BATCH_SIZE = None  # n_batch used when the current model was loaded
 
 # Display/Browser constants
 QT_VERSION = 6              # PyQt6 — written by installer; default 6 for v2

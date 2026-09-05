@@ -898,7 +898,7 @@ def synthesize_last_response(session_messages: list) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 def _wav_duration_seconds(file_path: str) -> float:
-    """Return duration of a WAV file in seconds (0.0 on failure)."""
+    """Return duration of a WAV file in seconds (fallback estimate on failure)."""
     try:
         import soundfile as sf
         info = sf.info(file_path)
@@ -907,25 +907,23 @@ def _wav_duration_seconds(file_path: str) -> float:
     except Exception:
         pass
     try:
-        # Fallback: file size heuristic for 16-bit mono 24 kHz Kokoro output
+        # Kokoro default: 24 kHz mono 16-bit PCM
         size = Path(file_path).stat().st_size
         return max(0.5, (size - 44) / (24000 * 2))
     except Exception:
-        return 30.0  # safe upper bound so the poll loop always exits
+        return 30.0
 
 
 def _play_audio_file(file_path: str, output_device: Optional[str] = None):
-    """Play an audio file with interruptible winsound playback.
+    """Play audio with interruptible winsound (SND_ASYNC + poll).
 
-    Uses SND_ASYNC so this thread can poll _tts_stop_flag every 100 ms and
-    issue SND_PURGE when the user hits pause / Emergency Stop. A fully
-    synchronous PlaySound cannot be interrupted reliably from another thread
-    on all Windows builds.
+    Polls _tts_stop_flag every 100 ms so pause / Emergency Stop can cut
+    playback via SND_PURGE. Fully synchronous PlaySound cannot be stopped
+    reliably from another thread on all Windows builds.
     """
     try:
         import winsound
         duration = _wav_duration_seconds(file_path)
-        # Async start — returns immediately; audio continues in the sound system
         winsound.PlaySound(
             file_path,
             winsound.SND_FILENAME | winsound.SND_ASYNC | winsound.SND_NODEFAULT,
@@ -939,7 +937,6 @@ def _play_audio_file(file_path: str, output_device: Optional[str] = None):
                 return
             time.sleep(step)
             elapsed += step
-        # Natural end — purge is a no-op if already finished
         return
     except Exception as e:
         print(f"[TTS] winsound play error: {e}")
@@ -953,10 +950,10 @@ def _play_audio_file(file_path: str, output_device: Optional[str] = None):
 
 
 def play_tts_audio(wav_path: str, output_device: Optional[str] = None):
-    """Play a synthesised TTS WAV file then delete it.
+    """Play a synthesised TTS WAV then delete it.
 
-    Blocks the *caller* thread until playback finishes or stop_speaking() is
-    called. Always run from a background worker so the Gradio UI stays live.
+    Blocks the caller until playback ends or stop_speaking() is called.
+    Always invoke from a background worker so the Gradio UI stays responsive.
     """
     if not wav_path or wav_path == "__played__":
         return
@@ -1043,11 +1040,7 @@ def speak_text(text: str, voice_id: Optional[str] = None,
 
 
 def stop_speaking():
-    """Stop any ongoing TTS synthesis or playback immediately.
-
-    Sets the stop flag (checked every 100 ms during async play and between
-    Kokoro synthesis chunks) and issues SND_PURGE so audio cuts off at once.
-    """
+    """Stop any ongoing TTS synthesis or playback immediately."""
     global _tts_thread
     _tts_stop_flag.set()
     try:
