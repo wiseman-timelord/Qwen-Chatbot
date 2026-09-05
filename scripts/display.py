@@ -1515,13 +1515,11 @@ def conversation_display(
         except Exception as _e:
             print(f"[CONTROLS] Unload failed: {_e}")
 
-    # Persist any Controls-panel changes (Context/Batch/Temp/Repeat) to JSON
-    # so they survive restart. Inference already reads live cfg globals, so
-    # Temperature/Repeat take effect without a model reload.
-    try:
-        cfg.save_config()
-    except Exception as _e:
-        print(f"[CONTROLS] Could not persist settings on Send: {_e}")
+    # Controls values (Context/Batch/Temp/Repeat) are applied live via cfg globals.
+    # Persistence is deferred until after a successful response so a failed load
+    # or cancelled generation does not write unproven settings to JSON.
+    # Configuration-page Save still writes Context/Batch (and other hardware
+    # settings) immediately when the user presses that button.
 
     # AUTO-LOAD MODEL IF NOT LOADED YET
     # Use globals as the authoritative source — Gradio state can be stale after
@@ -1996,6 +1994,18 @@ def conversation_display(
             print("[SESSION] Auto-saved after complete response")
         except Exception as e:
             print(f"[SESSION] Save error: {e}")
+
+    # Persist Controls-panel values (Context/Batch/Temp/Repeat) only after a
+    # successful response. Live cfg globals already drove this turn's inference.
+    # If load or generation failed, we never reach here — JSON keeps the last
+    # proven values and the Controls panel can still show the attempted ones.
+    try:
+        cfg.save_config()
+        print(f"[CONTROLS] Persisted after response: "
+              f"ctx={cfg.CONTEXT_SIZE} batch={cfg.BATCH_SIZE} "
+              f"temp={cfg.TEMPERATURE} repeat={cfg.REPEAT_PENALTY}")
+    except Exception as _e:
+        print(f"[CONTROLS] Could not persist settings after response: {_e}")
 
     # Clear temporary RAG input
     try:
@@ -2494,13 +2504,19 @@ def launch_display():
                                 gr.Button("Attach Slot Free", variant="huggingface", visible=False)
                                 for _ in range(cfg.MAX_POSSIBLE_ATTACH_SLOTS)
                             ]
-                        # Controls group — dual-sited with Configuration page.
+                        # Controls group — Context/Batch dual-sited with Configuration page.
                         # Context/Batch: snap on release; model reloads on next
                         # Send if sizes differ from the loaded model.
-                        # Temperature/Repeat Penalty: inference-only args, take
-                        # effect immediately (no reload); persisted on Send.
+                        # Temperature/Repeat Penalty: Controls-only (not on
+                        # Configuration). Inference args take effect immediately
+                        # (no reload). Persisted to JSON only after a successful
+                        # response so failed attempts do not overwrite saved values.
                         with gr.Group(visible=False) as context_group:
-                            gr.Markdown("**Quick Controls**  \nContext/Batch changes require model reload.")
+                            gr.Markdown(
+                                "**Quick Controls**  \n"
+                                "Context/Batch changes require model reload.  \n"
+                                "Temperature/Repeat apply immediately; saved after successful response."
+                            )
                             interaction_ctx_slider = gr.Slider(
                                 minimum=min(cfg.CTX_OPTIONS),
                                 maximum=max(cfg.CTX_OPTIONS),
@@ -2706,7 +2722,16 @@ def launch_display():
                     _mem_lock_mode = (cfg.LOADING_MODE == "Mem-Lock")
                     gr.Markdown("### Model Configuration")
 
+                    # Row 1: [ Model Loaded ] [ Model Selected ] [ Browse Folder ]
                     with gr.Row(elem_classes=["model-folder-row"]):
+                        model_loaded_indicator = gr.Textbox(
+                            label="Model Loaded",
+                            value="🟢 SO LOADED" if cfg.MODELS_LOADED else "🔴 NOT LOADED",
+                            interactive=False,
+                            max_lines=1,
+                            scale=1,
+                            visible=_mem_lock_mode
+                        )
                         model_dropdown = gr.Dropdown(
                             choices=get_available_models(),
                             label="Model Selected",
@@ -2717,19 +2742,26 @@ def launch_display():
                         )
                         browse_folder_btn = gr.Button(
                             "📁 Browse Folder",
-                            scale=1,                          # does not stretch
+                            scale=1,
                             elem_classes=["double-height"]
                         )
-                        model_loaded_indicator = gr.Textbox(
-                            label="Model Loaded",
-                            value="🟢 SO LOADED" if cfg.MODELS_LOADED else "🔴 NOT LOADED",
-                            interactive=False,
-                            max_lines=1,
-                            scale=1,
-                            visible=_mem_lock_mode
+
+                    # Row 2: [ Context Size ] [ Batch Size ] [ Load / Unload ]
+                    # Context / Batch stay on Configuration (needed for model load).
+                    # Temperature / Repeat Penalty live only on Interactions → Controls.
+                    with gr.Row():
+                        ctx_size = gr.Dropdown(
+                            choices=cfg.CTX_OPTIONS, label="Context Size",
+                            value=cfg.CONTEXT_SIZE, interactive=True,
+                            scale=3
+                        )
+                        batch_size = gr.Dropdown(
+                            choices=cfg.BATCH_OPTIONS, label="Batch Size",
+                            value=cfg.BATCH_SIZE, interactive=True,
+                            scale=3
                         )
                         load_unload_column = gr.Column(
-                            scale=0,                          # does not stretch
+                            scale=1,
                             visible=_mem_lock_mode
                         )
                         with load_unload_column:
@@ -2747,24 +2779,6 @@ def launch_display():
                                 elem_classes=["config-btn"],
                                 visible=_mem_lock_mode
                             )
-
-                    with gr.Row():
-                        ctx_size = gr.Dropdown(
-                            choices=cfg.CTX_OPTIONS, label="Context Size",
-                            value=cfg.CONTEXT_SIZE, interactive=True
-                        )
-                        batch_size = gr.Dropdown(
-                            choices=cfg.BATCH_OPTIONS, label="Batch Size",
-                            value=cfg.BATCH_SIZE, interactive=True
-                        )
-                        temperature = gr.Dropdown(
-                            choices=cfg.TEMP_OPTIONS, label="Temperature",
-                            value=cfg.TEMPERATURE, interactive=True
-                        )
-                        repeat_penalty = gr.Dropdown(
-                            choices=cfg.REPEAT_OPTIONS, label="Repeat Penalty",
-                            value=cfg.REPEAT_PENALTY, interactive=True
-                        )
 
 
                 gr.Markdown("---")
@@ -2817,7 +2831,7 @@ def launch_display():
                         filter_text = gr.Textbox(
                             label="Custom Filter Rules",
                             value=get_filter_text_for_display(),
-                            lines=15, interactive=True, scale=3,
+                            lines=15, interactive=True, scale=1,
                             placeholder="One rule per line: find_string → replace_string"
                         )
                         gr.Textbox(
@@ -3230,9 +3244,10 @@ def launch_display():
             outputs=[states["panel_mode"], history_slots_group, attach_group, context_group]
         )
 
-        # Controls-page quick toggles (dual-sited with Configuration)
-        # Context/Batch snap to nearest valid option on release → may force reload.
-        # Temperature/Repeat apply immediately (inference args, no reload).
+        # Controls-page quick toggles
+        # Context/Batch: dual-sited with Configuration; snap on release → may
+        # force reload on next Send if sizes differ from the loaded model.
+        # Temperature/Repeat: Controls-only; apply immediately (inference args).
         def _snap_to_options(val, options):
             try:
                 v = float(val)
@@ -3247,6 +3262,7 @@ def launch_display():
             if (cfg.MODELS_LOADED and cfg.LOADED_CONTEXT_SIZE is not None
                     and int(cfg.LOADED_CONTEXT_SIZE) != snapped):
                 print(f"[CONTROLS] Differs from loaded ({cfg.LOADED_CONTEXT_SIZE}) — will reload on next Send")
+            # Keep Configuration-page dropdown in sync
             return gr.update(value=snapped), gr.update(value=snapped)
 
         def _on_batch_slider(val):
@@ -3261,14 +3277,14 @@ def launch_display():
         def _on_temp_slider(val):
             snapped = float(_snap_to_options(val, cfg.TEMP_OPTIONS))
             cfg.TEMPERATURE = snapped
-            print(f"[CONTROLS] Temperature set to {snapped}")
-            return gr.update(value=snapped), gr.update(value=snapped)
+            print(f"[CONTROLS] Temperature set to {snapped} (live; saved after successful response)")
+            return gr.update(value=snapped)
 
         def _on_repeat_slider(val):
             snapped = float(_snap_to_options(val, cfg.REPEAT_OPTIONS))
             cfg.REPEAT_PENALTY = snapped
-            print(f"[CONTROLS] Repeat Penalty set to {snapped}")
-            return gr.update(value=snapped), gr.update(value=snapped)
+            print(f"[CONTROLS] Repeat Penalty set to {snapped} (live; saved after successful response)")
+            return gr.update(value=snapped)
 
         # Snap only on mouse release — avoids continuous Gradio re-renders.
         interaction_ctx_slider.release(
@@ -3284,15 +3300,15 @@ def launch_display():
         interaction_temp_slider.release(
             fn=_on_temp_slider,
             inputs=[interaction_temp_slider],
-            outputs=[interaction_temp_slider, temperature]
+            outputs=[interaction_temp_slider]
         )
         interaction_repeat_slider.release(
             fn=_on_repeat_slider,
             inputs=[interaction_repeat_slider],
-            outputs=[interaction_repeat_slider, repeat_penalty]
+            outputs=[interaction_repeat_slider]
         )
 
-        # Config-page → Controls-page live sync
+        # Config-page → Controls-page live sync (Context / Batch only)
         def _on_config_ctx_change(val):
             if val is None:
                 return gr.update()
@@ -3307,20 +3323,6 @@ def launch_display():
             cfg.BATCH_SIZE = new_val
             return gr.update(value=new_val)
 
-        def _on_config_temp_change(val):
-            if val is None:
-                return gr.update()
-            new_val = float(val)
-            cfg.TEMPERATURE = new_val
-            return gr.update(value=new_val)
-
-        def _on_config_repeat_change(val):
-            if val is None:
-                return gr.update()
-            new_val = float(val)
-            cfg.REPEAT_PENALTY = new_val
-            return gr.update(value=new_val)
-
         ctx_size.change(
             fn=_on_config_ctx_change,
             inputs=[ctx_size],
@@ -3330,16 +3332,6 @@ def launch_display():
             fn=_on_config_batch_change,
             inputs=[batch_size],
             outputs=[interaction_batch_slider]
-        )
-        temperature.change(
-            fn=_on_config_temp_change,
-            inputs=[temperature],
-            outputs=[interaction_temp_slider]
-        )
-        repeat_penalty.change(
-            fn=_on_config_repeat_change,
-            inputs=[repeat_penalty],
-            outputs=[interaction_repeat_slider]
         )
 
         # Web Search toggle
@@ -3474,9 +3466,11 @@ def launch_display():
         def save_configuration_page(
             layer_mode, cpu, cpu_threads_val, gpu, vram,
             sound_device, sample_rate,
-            model, ctx, batch, temp, repeat,
+            model, ctx, batch,
             loading_mode_val, tts_voice_val, tts_max_len_val
         ):
+            # Temperature / Repeat Penalty are Controls-only; this page does not
+            # receive them. Live cfg values (set from Controls) are written as-is.
             cfg.LAYER_ALLOCATION_MODE = layer_mode       if layer_mode       is not None else cfg.LAYER_ALLOCATION_MODE
             cfg.SELECTED_CPU          = cpu              if cpu              is not None else cfg.SELECTED_CPU
             cfg.CPU_THREADS           = int(cpu_threads_val) if cpu_threads_val is not None else cfg.CPU_THREADS
@@ -3487,8 +3481,6 @@ def launch_display():
             cfg.MODEL_NAME            = model            if model            is not None else cfg.MODEL_NAME
             cfg.CONTEXT_SIZE          = int(ctx)         if ctx              is not None else cfg.CONTEXT_SIZE
             cfg.BATCH_SIZE            = int(batch)       if batch            is not None else cfg.BATCH_SIZE
-            cfg.TEMPERATURE           = float(temp)      if temp             is not None else cfg.TEMPERATURE
-            cfg.REPEAT_PENALTY        = float(repeat)    if repeat           is not None else cfg.REPEAT_PENALTY
             if loading_mode_val is not None:
                 cfg.LOADING_MODE = loading_mode_val
                 cfg.MLOCK        = (loading_mode_val == "Mem-Lock")
@@ -3501,7 +3493,7 @@ def launch_display():
             cfg.MAX_TTS_LENGTH = int(tts_max_len_val) if tts_max_len_val is not None else cfg.MAX_TTS_LENGTH
 
             result = cfg.save_config()
-            # Keep Controls-page sliders in sync with the saved values
+            # Keep Controls-page Context/Batch (and Temp/Repeat) in sync
             return ((result, result, result, result)
                     + _model_visibility()
                     + (get_user_input_state(),)
@@ -3509,7 +3501,11 @@ def launch_display():
                        gr.update(value=cfg.TEMPERATURE), gr.update(value=cfg.REPEAT_PENALTY)))
 
         def restore_configuration_page():
-            """Reset every Configuration widget from cfg.CONFIGURATION_DEFAULTS."""
+            """Reset every Configuration widget from cfg.CONFIGURATION_DEFAULTS.
+
+            Temperature / Repeat Penalty defaults are also restored into cfg and
+            pushed to the Controls sliders (they have no widgets on this page).
+            """
             result = cfg.restore_configuration_defaults()
             return (
                 gr.update(value=cfg.LAYER_ALLOCATION_MODE),
@@ -3521,8 +3517,6 @@ def launch_display():
                 gr.update(choices=get_available_models(), value=cfg.MODEL_NAME),
                 gr.update(value=cfg.CONTEXT_SIZE),
                 gr.update(value=cfg.BATCH_SIZE),
-                gr.update(value=cfg.TEMPERATURE),
-                gr.update(value=cfg.REPEAT_PENALTY),
                 gr.update(value=cfg.LOADING_MODE),
                 gr.update(value=cfg.TTS_VOICE_NAME or "Default"),
                 gr.update(value=cfg.MAX_TTS_LENGTH),
@@ -3535,7 +3529,7 @@ def launch_display():
         _config_inputs = [
             layer_allocation_radio, cpu_select, cpu_threads, gpu_select, vram_size,
             sound_output_display, sound_sample_rate,
-            model_dropdown, ctx_size, batch_size, temperature, repeat_penalty,
+            model_dropdown, ctx_size, batch_size,
             loading_mode_radio, tts_voice, tts_max_len,
         ]
         _status_outputs = [
@@ -3547,7 +3541,7 @@ def launch_display():
 
         _user_input_output = [conversation_components["user_input"]]
 
-        # Order: ctx, batch, temperature, repeat_penalty sliders
+        # Controls sliders to refresh after Config save/restore
         _interaction_ctx_outputs = [
             interaction_ctx_slider, interaction_batch_slider,
             interaction_temp_slider, interaction_repeat_slider,
@@ -3563,8 +3557,8 @@ def launch_display():
             inputs=[],
             outputs=[
                 layer_allocation_radio, cpu_select, cpu_threads, gpu_select, vram_size,
-                sound_sample_rate, model_dropdown, ctx_size, batch_size, temperature,
-                repeat_penalty, loading_mode_radio, tts_voice, tts_max_len,
+                sound_sample_rate, model_dropdown, ctx_size, batch_size,
+                loading_mode_radio, tts_voice, tts_max_len,
             ] + _status_outputs + _model_vis_outputs + _user_input_output + _interaction_ctx_outputs
         )
 
