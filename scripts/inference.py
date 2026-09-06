@@ -924,6 +924,7 @@ def load_models(model_folder, model, vram_size, llm_state, models_loaded_state):
         import scripts.configure as cfg
         cfg.GPU_LAYERS          = gpu_layers
         cfg.MODEL_NAME          = model
+        cfg.LOADED_MODEL_NAME   = model
         cfg.LOADED_CONTEXT_SIZE = effective_ctx
         cfg.LOADED_BATCH_SIZE   = kwargs.get("n_batch", BATCH_SIZE)
 
@@ -939,6 +940,7 @@ def load_models(model_folder, model, vram_size, llm_state, models_loaded_state):
     except Exception as e:
         import scripts.configure as cfg
         cfg.GPU_LAYERS = 0
+        cfg.LOADED_MODEL_NAME = None
         tb = traceback.format_exc()
         err_msg = (f"Error loading model: {e}\n"
                    f"GPU Layers: {gpu_layers}/{num_layers} | "
@@ -1070,12 +1072,14 @@ def unload_models(llm_state, models_loaded_state):
 
         cfg.set_status("Unloaded", console=True)
         cfg.GPU_LAYERS = 0
+        cfg.LOADED_MODEL_NAME = None
         cfg.LOADED_CONTEXT_SIZE = None
         cfg.LOADED_BATCH_SIZE = None
         return "Model unloaded successfully.", None, False
 
     except Exception as e:
         cfg.GPU_LAYERS = 0
+        cfg.LOADED_MODEL_NAME = None
         tb = traceback.format_exc()
         is_vulkan_mem = ("0xe06d7363" in str(e) or "WinError -529697949" in str(e))
         if is_vulkan_mem and "vulkan" in cfg.BACKEND_TYPE.lower():

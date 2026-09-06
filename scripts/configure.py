@@ -104,6 +104,11 @@ GENERATION_ACTIVE = False  # True while a response stream is running; blocks unl
 AVAILABLE_MODELS = None
 SESSION_ACTIVE = False
 MODEL_NAME = "Select_a_model..."
+# Filename of the GGUF currently held in cfg.llm. Cleared on unload.
+# Used to detect when Configuration saved a different model while Mem-Lock
+# still has the previous one resident — without this, auto-load paths only
+# check MODELS_LOADED and keep serving the stale instance.
+LOADED_MODEL_NAME = None
 GPU_LAYERS = 0
 SELECTED_GPU = None
 

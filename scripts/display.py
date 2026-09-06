@@ -273,13 +273,32 @@ def update_cpu_select():
 
 
 def ensure_model_loaded():
-    """Lazy load model if not already loaded. Returns (success, status_message)"""
-    if cfg.MODELS_LOADED and cfg.llm is not None:
-        return True, "Model ready"
+    """Lazy load model if not already loaded. Returns (success, status_message)
 
+    Also treats a resident model whose filename does not match cfg.MODEL_NAME as
+    not loaded (stale Mem-Lock after a Configuration save changed the selection).
+    """
     model_name = cfg.MODEL_NAME
     if model_name in ["Select_a_model...", "No models found", "", None]:
         return False, "No valid model selected"
+
+    loaded_name = getattr(cfg, "LOADED_MODEL_NAME", None)
+    if (cfg.MODELS_LOADED and cfg.llm is not None
+            and loaded_name and loaded_name == model_name):
+        return True, "Model ready"
+
+    # Stale resident model (different filename) — drop it before loading the new one.
+    if cfg.MODELS_LOADED and cfg.llm is not None and loaded_name != model_name:
+        try:
+            print(f"[ENSURE-LOAD] Stale model '{loaded_name}' != selected '{model_name}' — unloading")
+            _s, new_llm, new_loaded = unload_models(cfg.llm, cfg.MODELS_LOADED)
+            cfg.llm = new_llm
+            cfg.MODELS_LOADED = new_loaded
+            cfg.LOADED_MODEL_NAME = None
+            cfg.LOADED_CONTEXT_SIZE = None
+            cfg.LOADED_BATCH_SIZE = None
+        except Exception as e:
+            print(f"[ENSURE-LOAD] Unload of stale model failed: {e}")
 
     cfg.set_status("Loading model on first use...", priority=True, console=True)
     try:
@@ -345,6 +364,7 @@ def get_user_input_state(model_name=_UNSET):
 def get_debug_globals_text():
     """Build display string of critical runtime globals NOT visible on Config/Settings tabs."""
     lines = []
+    lines.append(f"LOADED_MODEL_NAME:  {getattr(cfg, 'LOADED_MODEL_NAME', None)}")
     lines.append(f"LOADED_CONTEXT_SIZE:  {getattr(cfg, 'LOADED_CONTEXT_SIZE', 'N/A')}")
     lines.append(f"GPU_LAYERS:  {getattr(cfg, 'GPU_LAYERS', 0)}")
     lines.append(f"SESSION_ACTIVE:  {cfg.SESSION_ACTIVE}")
@@ -837,6 +857,7 @@ def handle_load_model(model_name, model_folder, vram_size, ctx_size, gpu, cpu, c
         if loaded:
             cfg.MODELS_LOADED = True
             cfg.llm = new_llm
+            cfg.LOADED_MODEL_NAME = model_name
             cfg.LOADED_CONTEXT_SIZE = int(ctx_size)
             cfg.LOADED_BATCH_SIZE = cfg.BATCH_SIZE
             beep()
@@ -880,6 +901,7 @@ def handle_unload_model(llm_state, models_loaded_state):
         cfg.MODELS_LOADED = new_models_loaded
         cfg.llm = new_llm
         cfg.GPU_LAYERS = 0
+        cfg.LOADED_MODEL_NAME = None
         cfg.LOADED_CONTEXT_SIZE = None
         cfg.LOADED_BATCH_SIZE = None
         beep()
@@ -1573,10 +1595,18 @@ def conversation_display(
         )
         return
 
-    # CONTEXT / BATCH SIZE MISMATCH → FORCE RELOAD
+    # MODEL / CONTEXT / BATCH MISMATCH → FORCE RELOAD
     # Interaction-page quick toggles update cfg.CONTEXT_SIZE / cfg.BATCH_SIZE
-    # immediately. If a model is already loaded with different sizes, unload
-    # first so the subsequent auto-load path picks up the new values.
+    # immediately. Configuration Save can change MODEL_NAME while Mem-Lock still
+    # holds the previous GGUF. If the resident instance does not match the
+    # configured selection or sizes, unload first so the auto-load path below
+    # picks up the new values.
+    _loaded_name = getattr(cfg, "LOADED_MODEL_NAME", None)
+    _model_mismatch = (
+        cfg.MODELS_LOADED and cfg.llm is not None
+        and _loaded_name is not None
+        and _loaded_name != cfg.MODEL_NAME
+    )
     _ctx_mismatch = (
         cfg.MODELS_LOADED and cfg.llm is not None
         and cfg.LOADED_CONTEXT_SIZE is not None
@@ -1587,15 +1617,21 @@ def conversation_display(
         and getattr(cfg, "LOADED_BATCH_SIZE", None) is not None
         and int(cfg.LOADED_BATCH_SIZE) != int(cfg.BATCH_SIZE)
     )
-    if _ctx_mismatch or _batch_mismatch:
-        print(f"[CONTROLS] Size mismatch detected "
-              f"(loaded ctx={cfg.LOADED_CONTEXT_SIZE} batch={getattr(cfg,'LOADED_BATCH_SIZE',None)} "
-              f"→ desired ctx={cfg.CONTEXT_SIZE} batch={cfg.BATCH_SIZE}). Reloading…")
+    if _model_mismatch or _ctx_mismatch or _batch_mismatch:
+        print(f"[CONTROLS] Mismatch detected "
+              f"(loaded model={_loaded_name!r} ctx={cfg.LOADED_CONTEXT_SIZE} "
+              f"batch={getattr(cfg,'LOADED_BATCH_SIZE',None)} "
+              f"→ desired model={cfg.MODEL_NAME!r} ctx={cfg.CONTEXT_SIZE} "
+              f"batch={cfg.BATCH_SIZE}). Reloading…")
         try:
             from scripts.inference import unload_models as _unload
-            _status, llm_state, models_loaded_state = _unload(llm_state, models_loaded_state)
+            # Prefer cfg.llm when Gradio state is stale after a Config save.
+            _llm = llm_state if llm_state is not None else cfg.llm
+            _loaded = models_loaded_state if models_loaded_state else cfg.MODELS_LOADED
+            _status, llm_state, models_loaded_state = _unload(_llm, _loaded)
             cfg.llm = llm_state
             cfg.MODELS_LOADED = models_loaded_state
+            cfg.LOADED_MODEL_NAME = None
             cfg.LOADED_CONTEXT_SIZE = None
             cfg.LOADED_BATCH_SIZE = None
             print(f"[CONTROLS] Unload before re-apply: {_status}")
@@ -3169,13 +3205,23 @@ def launch_display():
 
             # A different model means whatever sits in memory is now the wrong
             # one, so drop it and let the next send load the right one.
-            if new_model != previous and models_loaded_state and llm_state is not None:
+            # Prefer Gradio state; fall back to cfg globals if state is stale
+            # after a Mem-Lock load that only updated cfg.
+            _resident = (models_loaded_state and llm_state is not None) or (
+                cfg.MODELS_LOADED and cfg.llm is not None
+            )
+            if new_model != previous and _resident:
                 try:
+                    _llm = llm_state if llm_state is not None else cfg.llm
+                    _loaded = models_loaded_state if models_loaded_state else cfg.MODELS_LOADED
                     unload_status, llm_state, models_loaded_state = unload_models(
-                        llm_state, models_loaded_state
+                        _llm, _loaded
                     )
                     cfg.llm = llm_state
                     cfg.MODELS_LOADED = models_loaded_state
+                    cfg.LOADED_MODEL_NAME = None
+                    cfg.LOADED_CONTEXT_SIZE = None
+                    cfg.LOADED_BATCH_SIZE = None
                     status = f"{status} — {unload_status}"
                 except Exception as e:
                     status = f"{status} — unload error: {e}"
@@ -3570,10 +3616,17 @@ def launch_display():
             layer_mode, cpu, cpu_threads_val, gpu, vram,
             sound_device, sample_rate,
             model, ctx, batch,
-            loading_mode_val, tts_voice_val, tts_max_len_val
+            loading_mode_val, tts_voice_val, tts_max_len_val,
+            llm_state, models_loaded_state
         ):
             # Temperature / Repeat Penalty are Controls-only; this page does not
             # receive them. Live cfg values (set from Controls) are written as-is.
+            previous_model = cfg.MODEL_NAME
+            previous_ctx = cfg.CONTEXT_SIZE
+            previous_batch = cfg.BATCH_SIZE
+            previous_vram = cfg.VRAM_SIZE
+            previous_loading = cfg.LOADING_MODE
+
             cfg.LAYER_ALLOCATION_MODE = layer_mode       if layer_mode       is not None else cfg.LAYER_ALLOCATION_MODE
             cfg.SELECTED_CPU          = cpu              if cpu              is not None else cfg.SELECTED_CPU
             cfg.CPU_THREADS           = int(cpu_threads_val) if cpu_threads_val is not None else cfg.CPU_THREADS
@@ -3596,12 +3649,63 @@ def launch_display():
             cfg.MAX_TTS_LENGTH = int(tts_max_len_val) if tts_max_len_val is not None else cfg.MAX_TTS_LENGTH
 
             result = cfg.save_config()
-            # Keep Controls-page Context/Batch (and Temp/Repeat) in sync
+
+            # Mem-Lock: if the user changed the model (or other load-binding
+            # settings) while a model is resident, unload immediately so the
+            # next Send Input auto-loads under the new selection. One-Shot
+            # already unloads after each response, so this is mainly for
+            # Mem-Lock; still safe to run for either mode.
+            needs_unload = False
+            unload_reasons = []
+            if (cfg.MODELS_LOADED or models_loaded_state) and (
+                    cfg.llm is not None or llm_state is not None):
+                if cfg.MODEL_NAME != previous_model:
+                    needs_unload = True
+                    unload_reasons.append(f"model {previous_model!r} → {cfg.MODEL_NAME!r}")
+                elif getattr(cfg, "LOADED_MODEL_NAME", None) and cfg.LOADED_MODEL_NAME != cfg.MODEL_NAME:
+                    needs_unload = True
+                    unload_reasons.append(
+                        f"stale loaded {cfg.LOADED_MODEL_NAME!r} ≠ selected {cfg.MODEL_NAME!r}"
+                    )
+                if cfg.CONTEXT_SIZE != previous_ctx:
+                    needs_unload = True
+                    unload_reasons.append("context size")
+                if cfg.BATCH_SIZE != previous_batch:
+                    needs_unload = True
+                    unload_reasons.append("batch size")
+                if cfg.VRAM_SIZE != previous_vram:
+                    needs_unload = True
+                    unload_reasons.append("VRAM")
+                if cfg.LOADING_MODE != previous_loading:
+                    needs_unload = True
+                    unload_reasons.append("loading mode")
+
+            if needs_unload:
+                try:
+                    _llm = llm_state if llm_state is not None else cfg.llm
+                    _loaded = bool(models_loaded_state) or cfg.MODELS_LOADED
+                    if _llm is not None and _loaded:
+                        print(f"[CONFIG-SAVE] Unloading because: {', '.join(unload_reasons)}")
+                        _status, llm_state, models_loaded_state = unload_models(_llm, _loaded)
+                        cfg.llm = llm_state
+                        cfg.MODELS_LOADED = models_loaded_state
+                        cfg.LOADED_MODEL_NAME = None
+                        cfg.LOADED_CONTEXT_SIZE = None
+                        cfg.LOADED_BATCH_SIZE = None
+                        result = f"{result} — unloaded ({', '.join(unload_reasons)})"
+                        print(f"[CONFIG-SAVE] {_status}")
+                except Exception as e:
+                    print(f"[CONFIG-SAVE] Unload after model/settings change failed: {e}")
+                    result = f"{result} — unload warning: {e}"
+
+            # Keep Controls-page Context/Batch (and Temp/Repeat) in sync, and
+            # push refreshed llm / models_loaded Gradio state after any unload.
             return ((result, result, result, result)
                     + _model_visibility()
                     + (get_user_input_state(),)
                     + (gr.update(value=cfg.CONTEXT_SIZE), gr.update(value=cfg.BATCH_SIZE),
-                       gr.update(value=cfg.TEMPERATURE), gr.update(value=cfg.REPEAT_PENALTY)))
+                       gr.update(value=cfg.TEMPERATURE), gr.update(value=cfg.REPEAT_PENALTY))
+                    + (llm_state, models_loaded_state))
 
         def restore_configuration_page():
             """Reset every Configuration widget from cfg.CONFIGURATION_DEFAULTS.
@@ -3634,6 +3738,7 @@ def launch_display():
             sound_output_display, sound_sample_rate,
             model_dropdown, ctx_size, batch_size,
             loading_mode_radio, tts_voice, tts_max_len,
+            states["llm"], states["models_loaded"],
         ]
         _status_outputs = [
             interaction_global_status, config_status, filter_status, info_status,
@@ -3649,11 +3754,13 @@ def launch_display():
             interaction_ctx_slider, interaction_batch_slider,
             interaction_temp_slider, interaction_repeat_slider,
         ]
+        _llm_state_outputs = [states["llm"], states["models_loaded"]]
 
         save_config_btn.click(
             fn=save_configuration_page,
             inputs=_config_inputs,
-            outputs=_status_outputs + _model_vis_outputs + _user_input_output + _interaction_ctx_outputs
+            outputs=_status_outputs + _model_vis_outputs + _user_input_output
+                    + _interaction_ctx_outputs + _llm_state_outputs
         )
         restore_config_btn.click(
             fn=restore_configuration_page,
