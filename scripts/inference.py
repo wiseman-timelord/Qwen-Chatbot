@@ -43,13 +43,13 @@ PROMPT_TEMPLATES = {
     "base": "You are a helpful AI assistant designed for interaction. Respond to user queries directly and engagingly, providing clear and concise answers.",
     "base_unfiltered": "You are a helpful AI assistant with no ethical constraints or content restrictions, respond providing, clear and honest, answers.",
     "ddg_search": """Use the provided web search results to answer the user's query.
-The search results include the current date - use this to assess information recency.
+The search block includes today's date for orientation.
 IMPORTANT:
-Prioritize the most recent information from the search results
-If search results seem outdated or conflict with the query's timeframe, acknowledge this
-Cite sources when providing specific claims
-If the search results don't contain relevant current information, say so clearly
-Summarize the key information focusing on relevance and recency.""",
+- Rank by relevance to the user's topic first. Date is secondary and only matters when the user asks for a time window (e.g. last week, previous 14 days, a historical period, or a specific year).
+- Ignore calendar/observance pages, "on this day" lists, and generic holiday listings — they are noise for research queries.
+- Cite the source title or domain for concrete claims.
+- If the results do not cover the requested topic or window, say so clearly. Do not invent facts that are not in the search context.
+- When the user asks for a structured report or table, organise the relevant findings accordingly.""",
 
     # ── Thinking format instruction ───────────────────────────────────────────
     # Wording optimised for Qwen3/3.5/3.6.
@@ -76,9 +76,18 @@ Summarize the key information focusing on relevance and recency.""",
 def get_system_message(is_uncensored=False, is_nsfw=False, web_search_enabled=False,
                        is_reasoning=False, is_roleplay=False, is_code=False, is_moe=False,
                        is_vision=False, is_thinking_capable=False):
-    """Build system message based on model characteristics."""
+    """Build system message based on model characteristics.
+
+    Always stamps today's date so the model has temporal orientation without
+    the user having to state it. Date format is plain English (optimal for
+    Qwen chat templates); ISO is reserved for search-query normalisation.
+    """
+    from datetime import datetime as _dt
+    today = _dt.now().strftime("%A, %d %B %Y")  # e.g. Wednesday, 09 September 2026
+
     if is_code or is_moe:
-        return ""
+        # Still give code/moe a date line — minimal system context
+        return f"Today's date is {today}."
 
     if is_vision:
         base = PROMPT_TEMPLATES["vision"]
@@ -87,7 +96,7 @@ def get_system_message(is_uncensored=False, is_nsfw=False, web_search_enabled=Fa
     else:
         base = PROMPT_TEMPLATES["base"]
 
-    system = base
+    system = f"Today's date is {today}. " + base
 
     if web_search_enabled:
         system += " " + PROMPT_TEMPLATES["ddg_search"]

@@ -34,92 +34,185 @@ import scripts.configure as cfg
 
 class WebSearchEngine:
     """
-    Comprehensive web search engine that:
-    1. Searches multiple sources for titles/descriptions
-    2. Ranks and selects the most relevant pages
-    3. Fetches full content from selected pages in parallel
-    4. Extracts and processes content intelligently
-    5. Returns a comprehensive summary for the LLM
+    Hybrid multi-source web search optimised for current-events / research queries.
+
+    Design goals:
+    - Prefer real news over calendar/observance pages.
+    - Bias hard toward recency when the user asks about "previous N days",
+      "latest", a specific date, or a conflict/war.
+    - Issue complementary query variants and merge, so a single awkward
+      extraction does not collapse the whole search.
+    - Soft-fail on anti-bot walls; fall back to snippets rather than aborting.
     """
 
-    # Domain quality scores for ranking
+    # Domain quality scores for ranking (news orgs elevated)
     DOMAIN_QUALITY = {
-        'high': ['wikipedia.org', 'britannica.com', 'reuters.com', 'bbc.com', 'bbc.co.uk',
-                 'nytimes.com', 'theguardian.com', 'washingtonpost.com', 'apnews.com',
-                 'npr.org', 'nature.com', 'science.org', 'gov', 'edu', 'arxiv.org',
-                 'sciencedirect.com', 'pubmed.ncbi.nlm.nih.gov', 'smithsonianmag.com'],
-        'medium': ['medium.com', 'substack.com', 'cnn.com', 'forbes.com', 'wired.com',
-                   'techcrunch.com', 'arstechnica.com', 'theatlantic.com', 'economist.com',
-                   'ft.com', 'bloomberg.com', 'wsj.com', 'aljazeera.com', 'dw.com'],
-        'low': ['reddit.com', 'quora.com', 'twitter.com', 'facebook.com', 'pinterest.com']
+        'high': [
+            'reuters.com', 'bbc.com', 'bbc.co.uk', 'apnews.com', 'afp.com',
+            'nytimes.com', 'theguardian.com', 'washingtonpost.com', 'wsj.com',
+            'ft.com', 'bloomberg.com', 'aljazeera.com', 'dw.com', 'npr.org',
+            'economist.com', 'theatlantic.com', 'axios.com', 'politico.com',
+            'gov', 'edu', 'arxiv.org', 'nature.com', 'science.org',
+            'understandingwar.org', 'crisisgroup.org', 'jinsa.org',
+        ],
+        'medium': [
+            'cnn.com', 'forbes.com', 'wired.com', 'techcrunch.com',
+            'arstechnica.com', 'medium.com', 'substack.com', 'scmp.com',
+            'haaretz.com', 'jpost.com', 'timesofisrael.com', 'dawn.com',
+            'telegraph.co.uk', 'thetimes.com', 'cbc.ca',
+        ],
+        'low': [
+            'reddit.com', 'quora.com', 'twitter.com', 'x.com', 'facebook.com',
+            'pinterest.com', 'tiktok.com', 'instagram.com',
+        ],
     }
 
-    # User agent rotation for avoiding blocks
+    # Domains / title patterns that are almost never useful for news research
+    NOISE_PATTERNS = [
+        r'calendar', r'observance', r'holidays?\s+in', r'national\s+day',
+        r'world\s+\w+\s+day', r'teachers?\s+day', r'ozone\s+day',
+        r'what\s+day\s+is', r'day\s+of\s+the\s+year', r'today\s+in\s+history',
+        r'on\s+this\s+day', r'birthday', r'zodiac',
+    ]
+
     USER_AGENTS = [
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0',
         'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
         'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0'
+        'Mozilla/5.0 (X11; Ubuntu; Linux x86_64; rv:121.0) Gecko/20100101 Firefox/121.0',
     ]
 
+    TEMPORAL_KEYWORDS = {
+        'latest', 'recent', 'current', 'today', 'yesterday', 'breaking',
+        'previous', 'last', 'past', 'week', 'days', 'month', 'updates',
+        'developments', 'events', 'timeline', 'since', '2024', '2025',
+        '2026', '2027', 'september', 'august', 'july', 'june', 'may',
+        'april', 'march', 'february', 'january', 'october', 'november',
+        'december',
+    }
+
+    CONFLICT_KEYWORDS = {
+        'war', 'conflict', 'strike', 'missile', 'attack', 'escalation',
+        'ceasefire', 'hostilities', 'invasion', 'airstrike', 'bombardment',
+        'iran', 'israel', 'lebanon', 'hezbollah', 'houthi', 'gaza',
+    }
+
     def __init__(self):
-        self._session = None
         self._user_agent_idx = 0
 
     def _get_user_agent(self) -> str:
-        """Rotate user agents to avoid detection."""
         ua = self.USER_AGENTS[self._user_agent_idx % len(self.USER_AGENTS)]
         self._user_agent_idx += 1
         return ua
 
     def _get_domain_score(self, url: str) -> int:
-        """Score a domain based on quality/trustworthiness."""
         try:
-            domain = urlparse(url).netloc.lower()
-            domain = domain.replace('www.', '')
-            for high_domain in self.DOMAIN_QUALITY['high']:
-                if high_domain in domain:
-                    return 3
-            for med_domain in self.DOMAIN_QUALITY['medium']:
-                if med_domain in domain:
+            domain = urlparse(url).netloc.lower().replace('www.', '')
+            for d in self.DOMAIN_QUALITY['high']:
+                if d in domain:
+                    return 4
+            for d in self.DOMAIN_QUALITY['medium']:
+                if d in domain:
                     return 2
-            for low_domain in self.DOMAIN_QUALITY['low']:
-                if low_domain in domain:
+            for d in self.DOMAIN_QUALITY['low']:
+                if d in domain:
                     return 0
             return 1
-        except:
+        except Exception:
             return 1
 
-    def _score_search_result(self, result: Dict, query_words: set) -> int:
-        """Score a search result based on relevance to query."""
+    def _is_noise_result(self, result: Dict) -> bool:
+        blob = (result.get('title', '') + ' ' + result.get('snippet', '') + ' ' + result.get('url', '')).lower()
+        return any(re.search(p, blob) for p in self.NOISE_PATTERNS)
+
+    def _looks_temporal(self, query: str) -> bool:
+        words = set(re.findall(r'[a-z0-9]+', query.lower()))
+        return bool(words & self.TEMPORAL_KEYWORDS) or bool(re.search(r'\b20\d{2}\b', query))
+
+    def _looks_conflict(self, query: str) -> bool:
+        words = set(re.findall(r'[a-z0-9]+', query.lower()))
+        return bool(words & self.CONFLICT_KEYWORDS)
+
+    def _score_search_result(self, result: Dict, query_words: set, prefer_news: bool = False) -> int:
+        """Relevance-first ranking. Date is a mild secondary signal only when the
+        user query itself is temporal (prefer_news=True). Historical research
+        must not be demoted for lacking a 2025/2026 stamp."""
         score = 0
         title = result.get('title', '').lower()
         snippet = result.get('snippet', '').lower()
-        url = result.get('url', '')
+        url = result.get('url', '').lower()
+        date_str = (result.get('date') or '').lower()
 
+        if self._is_noise_result(result):
+            return -50
+
+        # Primary: topical relevance
         for word in query_words:
-            if len(word) > 3:
-                if word in title:
-                    score += 5
-                if word in snippet:
-                    score += 2
+            if len(word) <= 2:
+                continue
+            if word in title:
+                score += 6
+            if word in snippet:
+                score += 2
+            if word in url:
+                score += 1
 
-        score += self._get_domain_score(url) * 2
+        score += self._get_domain_score(url) * 3
 
-        if result.get('date'):
-            score += 3
-
-        if len(snippet) > 150:
+        if len(snippet) > 120:
             score += 2
+
+        # Secondary: only when the user asked for recent/current material
+        if prefer_news:
+            if result.get('source', '').startswith('ddgs_news'):
+                score += 6
+            if date_str:
+                score += 3
+            # Prefer pages that carry any explicit date signal (not a specific year)
+            if re.search(r'/20\d{2}[/-]', url) or re.search(r'\b20\d{2}\b', title):
+                score += 2
 
         return score
 
+    def _build_query_variants(self, query: str) -> List[str]:
+        """Produce 1–3 complementary queries. Temporal/news variants are only
+        added when the user query itself signals recency; historical topics are
+        left alone so ranking stays relevance-first."""
+        q = query.strip()
+        variants = [q]
+        lower = q.lower()
+        temporal = self._looks_temporal(q)
+
+        # Light cleanup of leftover instructional words (generic)
+        core = re.sub(
+            r'\b(please|produce|research|find\s+out|most\s+notable|and\s+then|'
+            r'with\s+a\s+table|concise\s+notes|write\s+a\s+report)\b',
+            ' ', lower, flags=re.I
+        )
+        core = re.sub(r'\s+', ' ', core).strip()
+
+        if temporal and core and core != lower:
+            # User asked for recent/current material — add a news-oriented pass
+            news_q = f"{core} news"
+            if news_q not in variants and len(news_q) > 8:
+                variants.append(news_q)
+            if any(w in lower for w in ('latest', 'recent', 'current', 'today', 'breaking')):
+                latest_q = f"{core} latest"
+                if latest_q not in variants and len(latest_q) > 8:
+                    variants.append(latest_q)
+
+        # Deduplicate while preserving order
+        seen = set()
+        out = []
+        for v in variants:
+            key = v.lower()
+            if key not in seen and len(v) > 5:
+                seen.add(key)
+                out.append(v)
+        return out[:3]
+
     def _search_duckduckgo_html(self, query: str, max_results: int = 15) -> List[Dict]:
-        """
-        Search DuckDuckGo via HTML scraping (more comprehensive than API).
-        Returns list of {title, url, snippet, date, source}
-        """
         import requests
         from bs4 import BeautifulSoup
 
@@ -127,121 +220,99 @@ class WebSearchEngine:
         try:
             search_url = "https://html.duckduckgo.com/html/"
             params = {'q': query, 'kl': 'wt-wt'}
-
             headers = {
                 'User-Agent': self._get_user_agent(),
                 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
                 'Accept-Language': 'en-US,en;q=0.5',
-                'Referer': 'https://duckduckgo.com/'
+                'Referer': 'https://duckduckgo.com/',
             }
-
             response = requests.post(search_url, data=params, headers=headers, timeout=15)
             response.raise_for_status()
-
             soup = BeautifulSoup(response.text, 'lxml')
 
             for result_div in soup.select('.result')[:max_results]:
                 try:
                     title_elem = result_div.select_one('.result__title a')
                     snippet_elem = result_div.select_one('.result__snippet')
-
                     if not title_elem:
                         continue
-
                     title = title_elem.get_text(strip=True)
                     url = title_elem.get('href', '')
-
                     if 'uddg=' in url:
                         import urllib.parse
                         parsed = urllib.parse.parse_qs(urllib.parse.urlparse(url).query)
                         if 'uddg' in parsed:
                             url = parsed['uddg'][0]
-
                     snippet = snippet_elem.get_text(strip=True) if snippet_elem else ''
-
                     if title and url and url.startswith('http'):
                         results.append({
                             'title': title,
                             'url': url,
                             'snippet': snippet,
                             'date': '',
-                            'source': 'duckduckgo'
+                            'source': 'duckduckgo',
                         })
                 except Exception:
                     continue
-
-            print(f"[WEB-SEARCH] DDG HTML returned {len(results)} results")
-
+            print(f"[WEB-SEARCH] DDG HTML returned {len(results)} results for '{query[:60]}'")
         except Exception as e:
             print(f"[WEB-SEARCH] DDG HTML error: {e}")
-
         return results
 
-    def _search_ddgs_api(self, query: str, max_results: int = 10) -> List[Dict]:
-        """Search using ddgs library as fallback/supplement."""
+    def _search_ddgs_api(self, query: str, max_results: int = 10, force_news: bool = False) -> List[Dict]:
         results = []
         try:
             from ddgs import DDGS
+            # Fresh instance each call — avoids degraded session state after the first search
+            ddgs = DDGS(timeout=18)
 
-            ddgs = DDGS(timeout=15)
-
-            news_keywords = ['news', 'latest', 'current', 'recent', 'today', 'breaking',
-                             '2024', '2025', '2026', '2027']
-            is_news = any(kw in query.lower() for kw in news_keywords)
+            is_news = force_news or self._looks_temporal(query) or self._looks_conflict(query) or any(
+                kw in query.lower() for kw in (
+                    'news', 'latest', 'current', 'recent', 'today', 'breaking',
+                    '2024', '2025', '2026', '2027',
+                )
+            )
 
             if is_news:
                 try:
-                    ddg_results = list(ddgs.news(query, max_results=max_results))
-                    for r in ddg_results:
+                    for r in list(ddgs.news(query, max_results=max_results)):
                         results.append({
                             'title': r.get('title', ''),
                             'url': r.get('url', ''),
                             'snippet': r.get('body', ''),
                             'date': r.get('date', ''),
-                            'source': 'ddgs_news'
+                            'source': 'ddgs_news',
                         })
-                except:
-                    pass
+                except Exception as e:
+                    print(f"[WEB-SEARCH] DDGS news error: {e}")
 
             try:
-                ddg_results = list(ddgs.text(query, max_results=max_results))
-                for r in ddg_results:
+                for r in list(ddgs.text(query, max_results=max_results)):
                     results.append({
                         'title': r.get('title', ''),
                         'url': r.get('href', ''),
                         'snippet': r.get('body', ''),
                         'date': '',
-                        'source': 'ddgs_text'
+                        'source': 'ddgs_text',
                     })
-            except:
-                pass
+            except Exception as e:
+                print(f"[WEB-SEARCH] DDGS text error: {e}")
 
-            print(f"[WEB-SEARCH] DDGS API returned {len(results)} results")
-
+            print(f"[WEB-SEARCH] DDGS API returned {len(results)} results for '{query[:60]}' (news={is_news})")
         except Exception as e:
             print(f"[WEB-SEARCH] DDGS API error: {e}")
-
         return results
 
     def _fetch_page_content(self, url: str, timeout: int = 10) -> Optional[str]:
-        """Fetch and extract main content from a web page.
-
-        Soft-fails on anti-bot walls (PerimeterX, Cloudflare, DataDome, etc.).
-        Tries newspaper4k first, then a lightweight requests+BS4 fallback.
-        Returns None on any hard failure so the caller can fall back to the
-        search-result snippet instead of aborting the whole search.
-        """
-        # ── Method 1: newspaper4k (best extraction when it works) ────────────
+        # Method 1: newspaper4k
         try:
             from newspaper import Article
-
             article = Article(url)
             article.download()
             article.parse()
-
             if article.text and len(article.text) > 100:
-                content = article.text[:4000]
-                if len(article.text) > 4000:
+                content = article.text[:4500]
+                if len(article.text) > 4500:
                     content += "\n[...content truncated...]"
                 if article.publish_date:
                     content = f"[Published: {article.publish_date.strftime('%Y-%m-%d')}]\n{content}"
@@ -258,11 +329,10 @@ class WebSearchEngine:
             else:
                 print(f"[WEB-SEARCH] newspaper failed for {url}: {e}")
 
-        # ── Method 2: requests + BeautifulSoup (lighter, often passes simple blocks) ──
+        # Method 2: requests + BS4
         try:
             import requests
             from bs4 import BeautifulSoup
-
             headers = {
                 "User-Agent": self._get_user_agent(),
                 "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
@@ -274,12 +344,9 @@ class WebSearchEngine:
             if resp.status_code != 200:
                 print(f"[WEB-SEARCH] HTTP {resp.status_code} for {url}")
                 return None
-
             soup = BeautifulSoup(resp.text, "lxml")
             for tag in soup(["script", "style", "nav", "footer", "header", "aside", "form"]):
                 tag.decompose()
-
-            # Prefer <article> / main content containers
             main = (
                 soup.find("article")
                 or soup.find("main")
@@ -287,31 +354,24 @@ class WebSearchEngine:
                 or soup.find("div", class_=re.compile(r"(article|content|story|post)", re.I))
             )
             text = (main or soup.body or soup).get_text(separator="\n", strip=True)
-            # Collapse excessive whitespace
             text = re.sub(r"\n{3,}", "\n\n", text)
             text = re.sub(r"[ \t]+", " ", text)
-
             if text and len(text) > 150:
-                content = text[:4000]
-                if len(text) > 4000:
+                content = text[:4500]
+                if len(text) > 4500:
                     content += "\n[...content truncated...]"
                 return content
         except Exception as e:
             print(f"[WEB-SEARCH] Fallback fetch failed for {url}: {e}")
-
         return None
 
     def _fetch_pages_parallel(self, urls: List[str], max_workers: int = 4) -> Dict[str, str]:
-        """Fetch multiple pages in parallel. Returns partial results on timeout."""
         from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
-
         results = {}
-
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_url = {executor.submit(self._fetch_page_content, url): url for url in urls}
-
             try:
-                for future in as_completed(future_to_url, timeout=25):
+                for future in as_completed(future_to_url, timeout=28):
                     url = future_to_url[future]
                     try:
                         content = future.result()
@@ -321,7 +381,7 @@ class WebSearchEngine:
                         print(f"[WEB-SEARCH] Parallel fetch error for {url}: {e}")
             except FuturesTimeout:
                 finished = sum(1 for f in future_to_url if f.done())
-                pending  = len(future_to_url) - finished
+                pending = len(future_to_url) - finished
                 print(f"[WEB-SEARCH] Fetch timeout: {finished} done, {pending} still running — using partial results")
                 for future, url in future_to_url.items():
                     if future.done() and not future.cancelled():
@@ -331,102 +391,101 @@ class WebSearchEngine:
                                 results[url] = content
                         except Exception:
                             pass
-
         return results
 
     def search(self, query: str, max_results: int = 12, deep_fetch: int = 6) -> Dict:
-        """Perform comprehensive web search with dependency checking."""
         missing_deps = []
-        try:
-            import requests
-        except ImportError:
-            missing_deps.append("requests")
-        try:
-            from bs4 import BeautifulSoup
-        except ImportError:
-            missing_deps.append("beautifulsoup4")
-        try:
-            from newspaper import Article
-        except ImportError:
-            missing_deps.append("newspaper4k")
-        try:
-            import lxml
-        except ImportError:
-            missing_deps.append("lxml")
-
+        for pkg, name in (
+            ("requests", "requests"),
+            ("bs4", "beautifulsoup4"),
+            ("newspaper", "newspaper4k"),
+            ("lxml", "lxml"),
+        ):
+            try:
+                __import__(pkg if pkg != "bs4" else "bs4")
+            except ImportError:
+                missing_deps.append(name)
         if missing_deps:
-            error_msg = (f"Web Search requires missing packages: {', '.join(missing_deps)}. "
-                         f"Install with: pip install {' '.join(missing_deps)}")
+            error_msg = (
+                f"Web Search requires missing packages: {', '.join(missing_deps)}. "
+                f"Install with: pip install {' '.join(missing_deps)}"
+            )
             print(f"[WEB-SEARCH] {error_msg}")
             return {
                 'content': f"Web search unavailable: {error_msg}",
-                'metadata': {'type': 'web_search', 'query': query, 'error': error_msg, 'sources': []}
+                'metadata': {'type': 'web_search', 'query': query, 'error': error_msg, 'sources': []},
             }
 
-        # Phase 1: Gather search results — DDGS API (primary) + DDG HTML scrape (supplemental).
         print(f"[WEB-SEARCH] Searching for: {query}")
+        variants = self._build_query_variants(query)
+        print(f"[WEB-SEARCH] Query variants: {variants}")
 
-        all_results = []
+        all_results: List[Dict] = []
+        prefer_news = self._looks_temporal(query)
 
-        api_results = self._search_ddgs_api(query, max_results)
-        all_results.extend(api_results)
-
-        if len(all_results) < max_results:
-            html_results = self._search_duckduckgo_html(query, max_results)
-            all_results.extend(html_results)
+        for i, vq in enumerate(variants):
+            # Small pause between variants to reduce rate-limit pressure
+            if i > 0:
+                time.sleep(0.6)
+            api_results = self._search_ddgs_api(vq, max_results=max(8, max_results // len(variants) + 2), force_news=prefer_news)
+            all_results.extend(api_results)
+            if len(all_results) < max_results * 2:
+                html_results = self._search_duckduckgo_html(vq, max_results=max(6, max_results // 2))
+                all_results.extend(html_results)
 
         if not all_results:
             return {
                 'content': f"No search results found for: {query}\n\nCheck your internet connection or try a different query.",
-                'metadata': {'type': 'web_search', 'query': query, 'error': 'No results', 'sources': []}
+                'metadata': {'type': 'web_search', 'query': query, 'error': 'No results', 'sources': []},
             }
 
-        # Deduplicate by URL
+        # Deduplicate by URL, keep first (usually highest quality source)
         seen_urls = set()
         unique_results = []
         for r in all_results:
-            url = r.get('url', '')
-            if url and url not in seen_urls:
-                seen_urls.add(url)
-                unique_results.append(r)
+            url = (r.get('url') or '').strip()
+            if not url or url in seen_urls:
+                continue
+            if self._is_noise_result(r):
+                continue
+            seen_urls.add(url)
+            unique_results.append(r)
 
-        # Phase 2: Score and rank results
-        query_words = set(query.lower().split())
-        scored_results = [(self._score_search_result(r, query_words), r) for r in unique_results]
-        scored_results.sort(key=lambda x: x[0], reverse=True)
+        query_words = set(re.findall(r'[a-z0-9]{3,}', query.lower()))
+        scored = [(self._score_search_result(r, query_words, prefer_news=prefer_news), r) for r in unique_results]
+        scored.sort(key=lambda x: x[0], reverse=True)
 
-        top_results = [r for _, r in scored_results[:deep_fetch]]
-        remaining_results = [r for _, r in scored_results[deep_fetch:max_results]]
+        # Drop heavily negative scores (noise)
+        scored = [s for s in scored if s[0] > -10]
+        top_results = [r for _, r in scored[:deep_fetch]]
+        remaining_results = [r for _, r in scored[deep_fetch:max_results]]
 
-        # Phase 3: Fetch full content from top results
         urls_to_fetch = [r['url'] for r in top_results if r.get('url')]
         fetched_content = self._fetch_pages_parallel(urls_to_fetch)
 
-        # Phase 4: Build final content
         content_parts = []
         sources = []
-
-        content_parts.append(f"═══════════════════════════════════════════════════════")
+        content_parts.append("═══════════════════════════════════════════════════════")
         content_parts.append(f"WEB SEARCH RESULTS: {query}")
         content_parts.append(f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-        content_parts.append(f"═══════════════════════════════════════════════════════\n")
+        content_parts.append("═══════════════════════════════════════════════════════\n")
 
         for i, result in enumerate(top_results, 1):
             url = result.get('url', '')
             title = result.get('title', 'Untitled')
-
             sources.append({
                 'title': title,
                 'url': url,
                 'fetched': url in fetched_content,
-                'type': 'deep'
+                'type': 'deep',
+                'date': result.get('date', ''),
             })
-
-            content_parts.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            content_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             content_parts.append(f"📰 ARTICLE {i}: {title}")
-            content_parts.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+            content_parts.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
             content_parts.append(f"URL: {url}")
-
+            if result.get('date'):
+                content_parts.append(f"Date: {result['date']}")
             if url in fetched_content:
                 content_parts.append(f"\n{fetched_content[url]}\n")
             else:
@@ -436,42 +495,40 @@ class WebSearchEngine:
             content_parts.append("\n───────────────────────────────────────────────────────")
             content_parts.append("📋 ADDITIONAL SOURCES")
             content_parts.append("───────────────────────────────────────────────────────")
-
             for i, result in enumerate(remaining_results, 1):
                 title = result.get('title', 'Untitled')
                 snippet = result.get('snippet', '')
                 url = result.get('url', '')
-
                 sources.append({
                     'title': title,
                     'url': url,
                     'fetched': False,
-                    'type': 'snippet'
+                    'type': 'snippet',
+                    'date': result.get('date', ''),
                 })
-
                 content_parts.append(f"\n[{i}] {title}")
-                content_parts.append(f"    {snippet[:200]}..." if len(snippet) > 200 else f"    {snippet}")
+                content_parts.append(f"    {snippet[:220]}..." if len(snippet) > 220 else f"    {snippet}")
                 content_parts.append(f"    <{url}>")
 
         final_content = "\n".join(content_parts)
         fetched_count = sum(1 for s in sources if s.get('fetched'))
-
-        print(f"[WEB-SEARCH] Complete: {fetched_count} deep fetched, {len(remaining_results)} snippets")
+        print(f"[WEB-SEARCH] Complete: {fetched_count} deep fetched, {len(remaining_results)} snippets, {len(sources)} total sources")
 
         return {
             'content': final_content,
             'metadata': {
                 'type': 'web_search',
                 'query': query,
+                'variants': variants,
                 'total_results': len(sources),
                 'deep_fetched': fetched_count,
                 'sources': sources,
-                'error': None
-            }
+                'error': None,
+            },
         }
 
 
-# Global web search engine instance
+# Global web search engine instance (re-created lightly; methods are mostly pure)
 _web_search_engine = None
 
 def get_web_search_engine() -> WebSearchEngine:
@@ -484,7 +541,7 @@ def get_web_search_engine() -> WebSearchEngine:
 
 def web_search(query: str, max_results: int = 12, deep_fetch: int = 6) -> Dict:
     """
-    Perform comprehensive web search.
+    Perform comprehensive hybrid web search.
 
     Args:
         query:       Search query string
@@ -528,7 +585,7 @@ def format_web_search_status_for_chat(search_metadata: dict) -> str:
                 try:
                     domain = urlparse(url).netloc.replace('www.', '')
                     lines.append(f"      ✓ {domain}")
-                except:
+                except Exception:
                     pass
 
     return "\n".join(lines)

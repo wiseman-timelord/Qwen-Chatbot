@@ -1377,16 +1377,60 @@ def build_progress_html(step: int, web_search_enabled: bool = False, auto_tts_en
 def extract_search_query(user_input: str) -> str:
     """Extract a clean, focused search query from natural language user input.
 
-    Conservative approach: strip only clear instructional boilerplate and
-    keep the core topic + any date the user supplied. Over-aggressive
-    regex previously truncated useful queries (e.g. date + topic).
+    Goals (community-facing, not prompt-specific):
+    - Strip instructional boilerplate so DuckDuckGo sees the topic, not the essay.
+    - Preserve temporal phrases the user wrote ("previous 14 days", "last week",
+      a year, a historical period) — they drive whether the search engine prefers
+      news endpoints.
+    - Normalise common date prose into ISO YYYY-MM-DD for the *search engine*
+      only. Qwen itself receives a separate plain-English "Today's date is …"
+      stamp in the system message; ISO here is for ranking quality, not the model.
+    - Do not invent recency bias. If the user asked about proto-Zoroastrianism,
+      the extracted query stays historical.
     """
     original = user_input.strip()
     query = original
 
-    # Strip common instructional prefixes (applied once, order matters)
+    # ── Date normalisation (search-engine side) ───────────────────────────────
+    # Accept several common prose orders and collapse to YYYY-MM-DD.
+    _months = {
+        'january': '01', 'jan': '01', 'february': '02', 'feb': '02',
+        'march': '03', 'mar': '03', 'april': '04', 'apr': '04',
+        'may': '05', 'june': '06', 'jun': '06', 'july': '07', 'jul': '07',
+        'august': '08', 'aug': '08', 'september': '09', 'sep': '09', 'sept': '09',
+        'october': '10', 'oct': '10', 'november': '11', 'nov': '11',
+        'december': '12', 'dec': '12',
+    }
+    _mon_alt = '|'.join(_months.keys())
+
+    # "9th september 2026" / "9 September 2026" / "9th of September, 2026"
+    query = re.sub(
+        rf'\b(\d{{1,2}})(?:st|nd|rd|th)?(?:\s+of)?\s+({_mon_alt})\,?\s+(20\d{{2}})\b',
+        lambda m: f"{m.group(3)}-{_months[m.group(2).lower()]}-{int(m.group(1)):02d}",
+        query, flags=re.IGNORECASE,
+    )
+    # "2026 September 9th" / "2026 September 9"
+    query = re.sub(
+        rf'\b(20\d{{2}})\s+({_mon_alt})\s+(\d{{1,2}})(?:st|nd|rd|th)?\b',
+        lambda m: f"{m.group(1)}-{_months[m.group(2).lower()]}-{int(m.group(3)):02d}",
+        query, flags=re.IGNORECASE,
+    )
+    # "September 9, 2026" / "September 9th 2026"
+    query = re.sub(
+        rf'\b({_mon_alt})\s+(\d{{1,2}})(?:st|nd|rd|th)?\,?\s+(20\d{{2}})\b',
+        lambda m: f"{m.group(3)}-{_months[m.group(1).lower()]}-{int(m.group(2)):02d}",
+        query, flags=re.IGNORECASE,
+    )
+    # "today's date is …" / "the date is …" / "as of …" wrappers → keep the ISO already made
+    query = re.sub(
+        r"\b(?:today'?s?\s+date\s+is|the\s+date\s+is|as\s+of)\s+",
+        '',
+        query, flags=re.IGNORECASE,
+    )
+
+    # ── Leading instructional strip ───────────────────────────────────────────
     leading_patterns = [
-        r'^(?:the\s+date\s+is\s+\d{4}[/-]\d{1,2}[/-]\d{1,2}\s*,?\s*)?(?:please\s+)?(?:find\s+out|search|look\s+up|research|tell\s+me|get)\s+(?:the\s+)?(?:latest|recent|current|new)?\s*(?:on|about|for|regarding)?\s*',
+        r'^(?:please\s+)?(?:produce\s+research\s+and\s+)?(?:find\s+out|search|look\s+up|research|tell\s+me|get)\s+(?:the\s+)?(?:latest|recent|current|new)?\s*(?:on|about|for|regarding)?\s*',
         r'^(?:can\s+you|could\s+you|would\s+you|will\s+you|please)?\s*(?:please\s+)?(?:search|find|look\s+up|research|google|check|investigate|tell\s+me\s+about)\s+(?:for\s+|about\s+|on\s+|into\s+)?',
         r'^(?:do|perform|run|conduct)\s+(?:a\s+)?web\s+(?:search|research)\s*(?:on|for|about|regarding|into|upon)?\s*',
         r'^search\s+(?:the\s+web\s+|online\s+)?(?:for|about|on|regarding|into)?\s*',
@@ -1394,16 +1438,30 @@ def extract_search_query(user_input: str) -> str:
         r'^what\s+(?:are|is)\s+(?:the\s+)?(?:latest|recent|current|new)\s+(?:news|information|updates?|events?|developments?)\s+(?:about|on|regarding|in|concerning)\s+',
         r'^i\s+(?:want|need|would\s+like)\s+(?:(?:a\s+)?(?:report|timeline|summary|analysis)\s+(?:on|about|of|regarding)\s+|(?:to\s+know|information|info)\s+(?:about|on|regarding)\s+)?',
         r'^(?:test|testing)[:\s-]+',
+        r'^(?:please\s+)?produce\s+research\s+and\s+',
     ]
     for pattern in leading_patterns:
         candidate = re.sub(pattern, '', query, flags=re.IGNORECASE).strip()
-        if len(candidate) > 8:
+        if len(candidate) > 12:
             query = candidate
             break
 
-    # Strip trailing instructions that are not part of the topic
+    # Extra generic instructional cleanup (order-independent)
+    query = re.sub(
+        r'\b(?:please\s+)?(?:produce\s+research\s+and\s+)?(?:find\s+out|research|search\s+for)\s+(?:the\s+)?',
+        '',
+        query, flags=re.IGNORECASE,
+    ).strip()
+    query = re.sub(
+        r'\bmost\s+notable\s+events\s+from\s+the\s+',
+        'events from the ',
+        query, flags=re.IGNORECASE,
+    )
+
+    # ── Trailing instructional strip ──────────────────────────────────────────
     trailing_patterns = [
         r',?\s*(?:and\s+)?(?:then\s+)?(?:compile|create|write|produce|generate|build|format)\s+(?:a\s+)?(?:report|timeline|summary|analysis|list|overview|review)\b.*$',
+        r',?\s*(?:with\s+a\s+table\s+and\s+concise\s+notes)\b.*$',
         r',?\s*(?:ensure\s+to\s+)?ONLY\s+cover\b.*$',
         r',?\s*(?:and\s+)?(?:then\s+)?(?:present|display|show|output)\s+(?:it|them|the\s+results?)\b.*$',
         r'\s*if\s+(?:you\s+)?(?:cannot|can\'t|could\s+not)\b.*$',
@@ -1413,34 +1471,61 @@ def extract_search_query(user_input: str) -> str:
     ]
     for pattern in trailing_patterns:
         candidate = re.sub(pattern, '', query, flags=re.IGNORECASE | re.DOTALL).strip()
-        if len(candidate) > 8:
+        if len(candidate) > 12:
             query = candidate
 
-    # Keep an explicit date the user supplied (helps recency ranking)
-    date_match = re.search(r'\b(20\d{2}[/-]\d{1,2}[/-]\d{1,2}|20\d{2})\b', original)
-    date_prefix = date_match.group(0) if date_match else ""
-
-    query = query.strip().strip('"\'').strip()
-    query = re.sub(r'\s+', ' ', query)
+    query = re.sub(r'\s+', ' ', query).strip().strip('"\'').strip()
     query = re.sub(r'[.!?]+$', '', query).strip()
 
-    # Prefer a short topical core when the cleaned string is still long
-    if len(query) > 100:
-        # Keep first ~90 chars on a word boundary, plus any date
-        core = query[:90].rsplit(' ', 1)[0]
-        if date_prefix and date_prefix not in core:
-            query = f"{date_prefix} {core}"
+    # If still very long, keep temporal window + key topic tokens (generic)
+    if len(query) > 140:
+        window = re.search(
+            r'(?:previous|last|past)\s+\d+\s+days?|(?:previous|last|past)\s+(?:week|month|fortnight)',
+            query, flags=re.I,
+        )
+        year = re.search(r'\b20\d{2}\b|\b1[0-9]{3}\b', query)  # any century year
+        # Capitalised multi-word names + common topic nouns
+        tokens = re.findall(
+            r'\b(?:[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*|[A-Za-z][a-z]{3,})\b',
+            query,
+        )
+        skip = {
+            'please', 'produce', 'research', 'find', 'out', 'then', 'with',
+            'table', 'concise', 'notes', 'report', 'findings', 'events',
+            'from', 'the', 'and', 'between', 'most', 'notable',
+        }
+        core_parts = []
+        if window:
+            core_parts.append(window.group(0))
+        if year:
+            core_parts.append(year.group(0))
+        seen = set()
+        for t in tokens:
+            tl = t.lower()
+            if tl in skip or tl in seen:
+                continue
+            seen.add(tl)
+            core_parts.append(t)
+            if len(core_parts) >= 12:
+                break
+        if core_parts:
+            query = ' '.join(core_parts)
         else:
-            query = core
+            query = query[:120].rsplit(' ', 1)[0]
 
-    if len(query) < 5:
-        # Last-resort keyword extraction
-        skip = {'the', 'a', 'an', 'and', 'or', 'but', 'so', 'here', 'test', 'i', 'please', 'find', 'out'}
-        keywords = [m.group() for m in re.finditer(r'\b[A-Za-z][A-Za-z0-9./-]{2,}\b', original)
-                    if m.group().lower() not in skip]
-        query = ' '.join(keywords[:10]) if keywords else original[:100]
+    if len(query) < 8:
+        skip = {
+            'the', 'a', 'an', 'and', 'or', 'but', 'so', 'here', 'test', 'i',
+            'please', 'find', 'out', 'produce', 'research', 'then', 'with',
+            'table', 'concise', 'notes',
+        }
+        keywords = [
+            m.group() for m in re.finditer(r'\b[A-Za-z][A-Za-z0-9./-]{2,}\b', original)
+            if m.group().lower() not in skip
+        ]
+        query = ' '.join(keywords[:12]) if keywords else original[:100]
 
-    print(f"[SEARCH-QUERY] Original: '{original[:70]}...' → Extracted: '{query}'")
+    print(f"[SEARCH-QUERY] Original: '{original[:80]}...' → Extracted: '{query}'")
     return query
 
 
