@@ -34,6 +34,12 @@ A high-quality local chat interface for Qwen GGUF models on Windows 10/11 (WSL n
 - **Python 3.10-3.12** — no version-specific code for other Python versions (3.13 unsupported: Kokoro TTS requires <3.13).
 - **Qwen v3 to v3.8, 1B-35B, GGUF** — See models section below.
 
+### Building Requirements 
+For compile options; If on PATH, ask AI how to check its on path, and as applicable fix...
+- [MSVC++ 2019-2022](https://visualstudio.microsoft.com/vs/older-downloads/) - MSVC with option Desktop Development enabled during install.
+- [Git](https://git-scm.com/install/) - Github Program for cloning the sources from github, ensure its on PATH.
+- [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) - Need the Vulkan SDK to build for Vulkan.
+
 ### Models Support 
 Remember while you can always update model support via editing the llama.cpp version in the installer.py script ie b8943 or whatever the [latest release](https://github.com/ggml-org/llama.cpp/releases) is, but there are also identifiers for model detection within the main program, unsure currently if future models will identify correctly, however...
 - Specifically only Qwen versions 3/3.5/3.6/3.8 in 4B-35BA3B, including, Abliterated, Heretic, HuiHui, Uncensored etc. 
