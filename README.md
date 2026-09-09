@@ -93,4 +93,4 @@ project_root/
 - [llama.cpp](https://github.com/ggml-org/llama.cpp) and [llama-cpp-python](https://github.com/abetlen/llama-cpp-python), are used for Inference.
 - [Gradio](https://gradio.app) is used for the GUI, AI Programming models are widely trained to handle code for this library.
 - [Kokoro TTS](https://github.com/hexgrad/kokoro) is used for the TTS that is faster/smaller than the Corqui TTS.
-- [Grok](https://grok.com), [Opus](https://claude.ai), [Devin](https://app.devin.ai) (possibly need a rain check), were used to create/progress Qwen-Chatbot towards its current state.
+- [Grok](https://grok.com), [Opus](https://claude.ai), [Devin](https://app.devin.ai), were used to create/progress Qwen-Chatbot towards its current state.
