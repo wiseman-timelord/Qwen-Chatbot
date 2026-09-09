@@ -41,10 +41,10 @@ For compile options; If on PATH, ask AI how to check its on path, and as applica
 - [Vulkan SDK](https://vulkan.lunarg.com/sdk/home) - Need the Vulkan SDK to build for Vulkan.
 
 ### Models Support 
-Remember while you can always update model support via editing the llama.cpp version in the installer.py script ie b8943 or whatever the [latest release](https://github.com/ggml-org/llama.cpp/releases) is, but there are also identifiers for model detection within the main program, unsure currently if future models will identify correctly, however...
+Remember while you can update model support via editing llama.cpp version in the installer.py ie b9999 of whatever the [latest release](https://github.com/ggml-org/llama.cpp/releases) is, but there is also identifiers/handling for each model/variant within the main program, so that wont always work, however...
 - Specifically only Qwen versions 3/3.5/3.6/3.8 in 4B-35BA3B, including, Abliterated, Heretic, HuiHui, Uncensored etc. 
-- I advise Gguf files in q5 quantization, unless this would cause excessive overflow into system ram, in which case use q4.
-- To find a model, for example [search HuggingFace.Co](https://huggingface.co/models?search=qwen%203.6%20gguf), and locate a gguf file to fit your vram, for example [this one is interesting](https://huggingface.co/tvall43/Qwen3.6-14B-A3B-FableVibes-GGUF/tree/main), only 3B loaded at a time and smaller than 35B.
+- Gguf files in q5 quantization are advised, as scores are 0.1-5% better, unless this would cause excessive overflow into system ram and end up too slow, in which case use minimum q4.
+- To find a model, for example [search HuggingFace.Co](https://huggingface.co/models?search=qwen%203.8%20gguf), and locate a gguf file to fit your vram.
 - Generally use a smaller Context Length ie 32768 for a websearch, larger context tend to be slower and use more memory, but there are options for up to 131072 tokens Context_Length.
 - Gguf/Llama.Cpp does not have Sliding Context window, but the program does have RAG and some other thing, unsure. 
 - The newer Qwen models have larger Batch_Output, while in program is max 8192 tokens, options can be edited in configure.py.
