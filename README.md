@@ -1,13 +1,16 @@
 # Qwen-Chatbot
 Status - Beta. 
-- Had some good upgrades lately, there is possibility for more testing/improving/innovating. 
+- Grok has been assisting me gloriously in upgrades for new, LlmLibrary page and STT and Controls panel. 
 
 ## Description
 A high-quality local chat interface for Qwen GGUF models on Windows 10/11 (WSL not required), using Python 3.10-3.12. An optimal number of features for a ChatBot, as well as, dynamic buttons/panels on the interface and websearch and RAG and TTS and archiving of sessions, and all on local models, so no imposed, limitations or guidelines (model dependent). This tool provides a comparable interface to premium non-agentic AI services, where the configuration is intended to be intelligent, without over-complication. The program uses offline libraries (apart from websearch) instead of, online services or repeat download or registration. This program is a fork of  [Chat-Gradio-Gguf](https://github.com/wiseman-timelord/Chat-Gradio-Gguf), which tends to be extremely hard for AI to fix in my last attempt, hence I have focused the program towards Llama.cpp on Windows with GGUF, because this is optimal for Vulkan which runs on any GPU. Also to note Qwen-Windows-Gguf does NOT have the extra-blank-lines bug that plagued development of Chat-Gradio-Gguf, and because of development of Qwen-Windows-Gguf, I can now fix Chat-Gradio-Gguf.
 
 ### Media
-- Here is the Interactions page, the Qwen3.8-9B-Abliterated-25-GGUF modle is performing well on the improved interface (v0.25)... 
+- Here is the Interactions page, the Qwen3.8-9B-Abliterated-25-GGUF model is performing well on the improved interface (v0.25)... 
 ![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/Interactions_Page.jpg)
+
+- Here is the LlmLibrary page, the models are all alpha-numeric order on the new interface (v0.40)... 
+![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/LlmLibrary_Page.jpg)
 
 - Here is the Configuration page, you can see there are many options here, but not too many (v0.26)... 
 ![Media_Missing](https://github.com/wiseman-timelord/Qwen-Windows-Gguf/blob/main/Media/Configuration_Page.jpg)
@@ -20,6 +23,8 @@ A high-quality local chat interface for Qwen GGUF models on Windows 10/11 (WSL n
 - **GPU Support**: Vulkan (binary download or compile), with GPU selection for multi CPU/GPU setups; CPU-only mode also supported.
 - **Research-Grade Tools**: RAG, web search, chunking, THINK-phase streaming, Markdown formatting, and file attachments.
 - **Text To Speech**: Kokoro TTS for realistic reading of output, filtered of symbols/tags/thinking appropriately.
+- **Speech To Text**: Whisper_Faster for fast STT, which seem to work in basic when talk with hand cupped to microphone speaking clear/calm. 
+- **Models Library**: Sets Library folder, then program search the folder/subfolders in location for "Ggufs" but not "mmproj", and list.
 - **Common File Support**: Handles `.bat`, `.py`, `.ps1`, `.txt`, `.json`, `.yaml`, `.psd1`, `.xaml`, and other common formats.
 - **Configurable Context**: Set model context to 8192-138072, and batch output to 256-8192.
 - **Enhanced Interface Controls**: Load/unload models, manage sessions, shutdown, and configure settings.
