@@ -164,8 +164,14 @@ def clean_content(role, content):
     return content.strip()
 
 
+def _natural_sort_key(s: str):
+    """Case-insensitive natural sort key so 1B < 3B < 7B < 9B < 12B (not lex order)."""
+    return [int(part) if part.isdigit() else part.lower()
+            for part in re.split(r'(\d+)', s)]
+
+
 def get_available_models():
-    """Return list of available GGUF models."""
+    """Return list of available GGUF models (one path per entry, natural-sorted)."""
     from scripts.utility import short_path
 
     model_dir = Path(cfg.MODEL_FOLDER)
@@ -179,9 +185,19 @@ def get_available_models():
         return ["Select_a_model..."]
 
     try:
-        files = list(model_dir.glob("*.gguf"))
-        models = [f.name for f in files if f.is_file()
-                  and "mmproj" not in f.name.lower()]
+        files = [f for f in model_dir.rglob("*.gguf") if f.is_file()]
+        models = []
+        for f in files:
+            if "mmproj" in f.name.lower():
+                continue
+            try:
+                rel = f.relative_to(model_dir).as_posix()
+            except ValueError:
+                rel = f.name
+            models.append(rel)
+        # Natural sort: numeric parts compared as integers so folder/size order
+        # is 1b-2b → 3b-4b → 7b-9b → 12B-15B instead of lex "12B" before "1b".
+        models = sorted(models, key=_natural_sort_key)
 
         if models:
             print(f"[MODELS] Found {len(models)} models:")

@@ -27,7 +27,7 @@ from pygments.formatters import HtmlFormatter
 
 # Project imports - consolidated configuration
 import scripts.configure as cfg
-from scripts.configure import save_config
+from scripts.configure import save_config, save_llm_library, restore_llm_library_defaults
 
 # Commonly used constants (kept explicit for clarity & auto-complete)
 from scripts.configure import (
@@ -66,6 +66,8 @@ from scripts.tools import (
     get_voice_id_by_name, verify_tts_voice, speak_text,
     synthesize_text_to_file, play_tts_audio,
     clear_tts_stop, is_tts_stop_requested,
+    start_stt_listening, stop_stt_listening, is_stt_listening, get_stt_partial,
+    get_stt_partials, initialize_stt,
 )
 
 
@@ -336,7 +338,7 @@ def get_model_loaded_display(is_loaded):
 # box ended up stuck in the locked state.
 
 USER_INPUT_PLACEHOLDER_READY  = "Type your message here... (model auto-loads on first send)"
-USER_INPUT_PLACEHOLDER_LOCKED = "Configure models first on Configuration page."
+USER_INPUT_PLACEHOLDER_LOCKED = "Configure models first on the LlmLibrary page."
 
 _NO_MODEL_VALUES = (None, "", "Select_a_model...", "No models found")
 
@@ -377,6 +379,10 @@ def get_debug_globals_text():
     lines.append(f"CPU_PHYSICAL_CORES:  {getattr(cfg, 'CPU_PHYSICAL_CORES', 'N/A')}")
     lines.append(f"CPU_LOGICAL_CORES:  {getattr(cfg, 'CPU_LOGICAL_CORES', 'N/A')}")
     lines.append(f"FILTER_MODE:  {getattr(cfg, 'FILTER_MODE', 'N/A')}")
+    # STT is chosen at install time (constants.ini) — not a Configuration-page control
+    lines.append(f"STT_MODEL:  {getattr(cfg, 'STT_MODEL', 'N/A')}")
+    lines.append(f"STT_ENGINE:  {getattr(cfg, 'STT_ENGINE', 'N/A')}")
+    lines.append(f"STT_ENABLED:  {getattr(cfg, 'STT_ENABLED', False)}")
     return "\n".join(lines)
 
 
@@ -797,36 +803,22 @@ def apply_output_filter(text):
 
 
 def update_model_list(model_folder):
-    """Update model dropdown choices and set correct initial value from loaded config."""
     print(f"[MODEL-LIST] update_model_list called with folder='{model_folder}'")
-
     if model_folder and model_folder.strip() and model_folder != cfg.MODEL_FOLDER:
         cfg.MODEL_FOLDER = model_folder
-        print(f"[MODEL-LIST] cfg.MODEL_FOLDER updated to: {cfg.MODEL_FOLDER}")
-
     available = get_available_models()
-    PLACEHOLDERS = {"Select_a_model...", "No models found"}
-    real_models = [m for m in available if m not in PLACEHOLDERS]
-
-    if real_models:
-        choices = ["Select_a_model..."] + real_models
-    else:
-        choices = ["No models found"]
-
+    real_models = [m for m in available if m not in ("Select_a_model...", "No models found")]
     saved = cfg.MODEL_NAME
     if saved in real_models:
         selected_value = saved
     elif real_models:
         selected_value = real_models[0]
         cfg.MODEL_NAME = selected_value
-        print(f"[MODEL-LIST] Auto-selected first model: '{selected_value}'")
     else:
-        selected_value = "No models found"
+        selected_value = None
         cfg.MODEL_NAME = "Select_a_model..."
+    return gr.update(choices=real_models, value=selected_value, interactive=len(real_models) > 0)
 
-    interactive_val = len(real_models) > 0
-    print(f"[MODEL-LIST] Returning choices={len(choices)} items, value='{selected_value}', interactive={interactive_val}")
-    return gr.update(choices=choices, value=selected_value, interactive=interactive_val)
 
 
 def handle_load_model(model_name, model_folder, vram_size, ctx_size, gpu, cpu, cpu_threads, llm_state, models_loaded_state):
@@ -1159,6 +1151,45 @@ def tts_heartbeat():
     return "idle"
 
 
+def toggle_stt_mic(current_text):
+    if is_stt_listening():
+        stop_stt_listening()
+        return gr.update(value="🎤", variant="secondary"), current_text or "", "STT off"
+    ok = start_stt_listening()
+    if ok:
+        return gr.update(value="🔴", variant="primary"), current_text or "", "STT listening… speak now"
+    return gr.update(value="🎤", variant="secondary"), current_text or "", "STT unavailable"
+
+def stt_partial_tick(current_text):
+    """Append newly transcribed phrases to the live user-input box.
+
+    STT pushes *deltas* (one completed utterance at a time). We never
+    overwrite the box with an internal accumulator, so if the user deletes
+    or edits text while the mic is still open, the next phrase continues
+    from whatever is currently in the box.
+    """
+    if not is_stt_listening():
+        return gr.update()
+    # Prefer draining all queued phrases so a burst of short utterances
+    # lands in one UI update.
+    phrases = get_stt_partials()
+    if not phrases:
+        return gr.update()
+    base = (current_text or "").rstrip()
+    for phrase in phrases:
+        phrase = (phrase or "").strip()
+        if not phrase:
+            continue
+        if not base:
+            base = phrase
+        elif base.endswith(("-", "—", "…")):
+            # continue mid-word / ellipsis without forced space
+            base = base + phrase
+        else:
+            base = base + " " + phrase
+    return gr.update(value=base)
+
+
 def handle_inline_edit(idx_str, session_messages):
     """Triggered by JS inline edit button via hidden relay textbox."""
     if not idx_str or not idx_str.strip():
@@ -1182,7 +1213,7 @@ def handle_inline_edit(idx_str, session_messages):
     new_messages = session_messages[:original_idx]
     chatbot_out  = get_chatbot_output(messages_to_tuples(new_messages), new_messages)
     has_ai       = any(m.get('role') == 'assistant' for m in new_messages)
-    status       = f"✏️ Editing from message {nth + 1} — edit the text above then Send Input."
+    status       = f"✏️ Editing from message {nth + 1} — edit the text above then Submit Input."
     return user_content, chatbot_out, new_messages, status, has_ai, gr.update()
 
 
@@ -1286,8 +1317,8 @@ def format_session_id(session_id):
 def update_action_buttons(phase, has_ai_response=False):
     """Update action buttons based on interaction phase.
     Dynamic bar states:
-      • waiting_for_input  →  'Send Input' visible; Wait + Emergency Stop hidden
-      • generating         →  'Send Input' hidden; Wait + red Emergency Stop visible
+      • waiting_for_input  →  'Submit Input' visible; Wait + Emergency Stop hidden
+      • generating         →  'Submit Input' hidden; Wait + red Emergency Stop visible
     Edit Previous and Copy Output are handled by per-message inline icons.
     """
     if phase == "waiting_for_input":
@@ -1297,9 +1328,9 @@ def update_action_buttons(phase, has_ai_response=False):
     else:
         action_visible, wait_visible, stop_visible = True, False, False
 
-    action_value   = "Send Input"
+    action_value   = "Submit Input"
     action_variant = "secondary" if phase == "waiting_for_input" else "primary"
-    action_classes = ["send-button-green"] if phase == "waiting_for_input" else []
+    action_classes = ["submit-button-green"] if phase == "waiting_for_input" else []
     action_interactive = (phase == "waiting_for_input")
 
     wait_value = "..Wait For Response.."
@@ -1568,7 +1599,7 @@ def request_emergency_stop():
     and the phase yields in conversation_display abort promptly.
 
     Hard path (watchdog): if GENERATION_ACTIVE is still True after
-    _HARD_STOP_SECONDS, force-unload the model. Next Send Input will
+    _HARD_STOP_SECONDS, force-unload the model. Next Submit Input will
     re-load it (One-Shot or Mem-Lock both support this).
     """
     global _cancel_watchdog
@@ -1624,6 +1655,10 @@ def conversation_display(
     Main conversation handler - Gradio 5.x.
     Uses message dict list directly; Chatbot type='messages' renders natively.
     """
+    try:
+        stop_stt_listening()
+    except Exception:
+        pass
     from scripts.inference import get_model_settings, get_response_stream, load_models
     from scripts.configure import context_injector
     from scripts.utility import read_file_content
@@ -2457,7 +2492,7 @@ def launch_display():
         opacity: 0 !important;
         pointer-events: none !important;
     }
-    .send-button-green { background-color: green !important; color: white !important }
+    .submit-button-green { background-color: green !important; color: white !important }
     .send-button-orange { background-color: orange !important; color: white !important }
     .send-button-red { background-color: red !important; color: white !important }
     /* white-space must stay 'normal' here: the markdown renderer leaves
@@ -2644,7 +2679,29 @@ def launch_display():
     }
     """
 
-    final_css = css_common
+    final_css = css_common + """
+/* ~30 visible rows; scrollbar only when content exceeds that height */
+.model-library-list {
+    min-height: 45em !important;
+    max-height: 45em !important;
+    height: 45em !important;
+    overflow-y: auto !important;
+    border: 1px solid var(--border-color-primary, #444);
+    border-radius: 6px;
+    padding: 0.35em 0.5em;
+    box-sizing: border-box;
+}
+.model-library-list label {
+    display: block;
+    padding: 0.15em 0.35em;
+    line-height: 1.4em;
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 0.92em;
+}
+.model-library-list .wrap {
+    min-height: 43em !important;
+}
+"""
 
     blocks_kwargs = {
         "title": "Qwen-Chatbot",
@@ -2819,6 +2876,10 @@ def launch_display():
                                     "🔇", variant="secondary",
                                     elem_id="cguf-tts-btn", min_width=50
                                 )
+                                action_buttons["stt_mic"] = gr.Button(
+                                    "🎤", variant="secondary",
+                                    elem_id="cguf-stt-btn", min_width=50
+                                )
 
                         copy_action_box = gr.Textbox(
                             value="", visible=True,
@@ -2847,7 +2908,7 @@ def launch_display():
                         )
 
                         with gr.Row(elem_classes=["clean-elements"]):
-                            action_buttons["action"] = gr.Button("Send Input", variant="secondary", elem_classes=["send-button-green"], scale=1)
+                            action_buttons["action"] = gr.Button("Submit Input", variant="secondary", elem_classes=["submit-button-green"], scale=1)
                             action_buttons["cancel_response"] = gr.Button("..Wait For Response..", variant="primary", scale=1, visible=False)
                             action_buttons["emergency_stop"] = gr.Button(
                                 "Emergency Stop", variant="stop",
@@ -2864,6 +2925,72 @@ def launch_display():
                         interactive=False, max_lines=1, scale=20
                     )
                     exit_interaction = gr.Button("Exit Program", variant="stop", elem_classes=["double-height"], scale=1)
+
+            with gr.Tab("LlmLibrary"):
+                _mem_lock_mode = (cfg.LOADING_MODE == "Mem-Lock")
+                _init_models = get_available_models()
+                _real = [m for m in _init_models if m not in ("Select_a_model...", "No models found")]
+                _selected = cfg.MODEL_NAME if cfg.MODEL_NAME in _real else (_real[0] if _real else None)
+
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        with gr.Row():
+                            model_dropdown = gr.Radio(
+                                choices=_real if _real else [],
+                                label="Models in Library",
+                                value=_selected,
+                                interactive=bool(_real),
+                                elem_classes=["model-select", "model-library-list"],
+                            )
+
+                    with gr.Column(scale=1):
+                        models_folder_display = gr.Textbox(
+                            label="Library Folder",
+                            value=cfg.MODEL_FOLDER,
+                            interactive=False,
+                            scale=2,
+                            max_lines=1,
+                        )
+                        browse_folder_btn = gr.Button(
+                            "📁 Browse Folder",
+                            scale=1,
+                        )
+                        model_loaded_indicator = gr.Textbox(
+                            label="Model Loaded",
+                            value="🟢 SO LOADED" if cfg.MODELS_LOADED else "🔴 NOT LOADED",
+                            interactive=False,
+                            max_lines=1,
+                            visible=_mem_lock_mode,
+                        )
+                        ctx_size = gr.Dropdown(
+                            choices=cfg.CTX_OPTIONS, label="Context Size",
+                            value=cfg.CONTEXT_SIZE, interactive=True,
+                        )
+                        batch_size = gr.Dropdown(
+                            choices=cfg.BATCH_OPTIONS, label="Batch Size",
+                            value=cfg.BATCH_SIZE, interactive=True,
+                        )
+                        _btn_label = "📤 Unload Model" if cfg.MODELS_LOADED else "📥 Load Model"
+                        _btn_variant = "stop" if cfg.MODELS_LOADED else "primary"
+                        load_unload_btn = gr.Button(
+                            _btn_label, variant=_btn_variant,
+                            visible=_mem_lock_mode, elem_classes=["config-btn"],
+                        )
+                        load_model_btn = load_unload_btn
+                        unload_model_btn = load_unload_btn
+                        load_unload_column = load_unload_btn
+
+                gr.Markdown("---")
+                with gr.Row():
+                    save_library_btn = gr.Button("Save All LlmLibrary", variant="primary", size="lg")
+                    restore_library_btn = gr.Button("Restore to Defaults", variant="secondary", size="lg")
+                gr.Markdown("---")
+                with gr.Row():
+                    library_status = gr.Textbox(
+                        value="Browse a folder of GGUF models (subfolders scanned; mmproj ignored).",
+                        label="Status", interactive=False, max_lines=1, scale=20,
+                    )
+                    exit_library = gr.Button("Exit Program", variant="stop", elem_classes=["double-height"], scale=1)
 
             with gr.Tab("Configuration"):
                 with gr.Group():
@@ -2937,66 +3064,16 @@ def launch_display():
                         )
 
                 with gr.Group():
-                    _mem_lock_mode = (cfg.LOADING_MODE == "Mem-Lock")
-                    gr.Markdown("### Model Configuration")
-
-                    # Row 1: [ Model Loaded ] [ Model Selected ] [ Browse Folder ]
-                    with gr.Row(elem_classes=["model-folder-row"]):
-                        model_loaded_indicator = gr.Textbox(
-                            label="Model Loaded",
-                            value="🟢 SO LOADED" if cfg.MODELS_LOADED else "🔴 NOT LOADED",
+                    gr.Markdown("### Speech-to-Text (STT)")
+                    with gr.Row():
+                        # Always use the Windows default recording device so the
+                        # user configures the mic via the system Sound settings.
+                        stt_input_device = gr.Textbox(
+                            label="Microphone / Input Device",
+                            value="Default Recording Device",
                             interactive=False,
                             max_lines=1,
-                            scale=1,
-                            visible=_mem_lock_mode
                         )
-                        model_dropdown = gr.Dropdown(
-                            choices=get_available_models(),
-                            label="Model Selected",
-                            value=cfg.MODEL_NAME,
-                            interactive=True,
-                            elem_classes="model-select",
-                            scale=5
-                        )
-                        browse_folder_btn = gr.Button(
-                            "📁 Browse Folder",
-                            scale=1,
-                            elem_classes=["double-height"]
-                        )
-
-                    # Row 2: [ Context Size ] [ Batch Size ] [ Load / Unload ]
-                    # Context / Batch stay on Configuration (needed for model load).
-                    # Temperature / Repeat Penalty live only on Interactions → Controls.
-                    with gr.Row():
-                        ctx_size = gr.Dropdown(
-                            choices=cfg.CTX_OPTIONS, label="Context Size",
-                            value=cfg.CONTEXT_SIZE, interactive=True,
-                            scale=3
-                        )
-                        batch_size = gr.Dropdown(
-                            choices=cfg.BATCH_OPTIONS, label="Batch Size",
-                            value=cfg.BATCH_SIZE, interactive=True,
-                            scale=3
-                        )
-                        load_unload_column = gr.Column(
-                            scale=1,
-                            visible=_mem_lock_mode
-                        )
-                        with load_unload_column:
-                            load_model_btn = gr.Button(
-                                "📥 Load Model",
-                                variant="primary",
-                                scale=1,
-                                elem_classes=["config-btn"],
-                                visible=_mem_lock_mode
-                            )
-                            unload_model_btn = gr.Button(
-                                "📤 Unload Model",
-                                variant="stop",
-                                scale=1,
-                                elem_classes=["config-btn"],
-                                visible=_mem_lock_mode
-                            )
 
 
                 gr.Markdown("---")
@@ -3146,7 +3223,7 @@ def launch_display():
             print(f"[BROWSE] cfg.MODEL_FOLDER set to: {cfg.MODEL_FOLDER}")
 
             try:
-                n = len([f for f in Path(resolved).glob("*.gguf") if "mmproj" not in f.name.lower()])
+                n = len([f for f in Path(resolved).rglob("*.gguf") if f.is_file() and "mmproj" not in f.name.lower()])
             except Exception:
                 n = 0
             status = f"Folder: {short_path(resolved)} — {n} model(s) found"
@@ -3156,43 +3233,56 @@ def launch_display():
         browse_folder_btn.click(
             fn=browse_and_update_folder,
             inputs=[],
-            outputs=[
-                model_folder_state,
-                interaction_global_status, config_status, filter_status
-            ]
+            outputs=[model_folder_state, interaction_global_status, library_status, library_status]
         ).then(
             fn=update_model_list,
             inputs=[model_folder_state],
             outputs=[model_dropdown]
+        ).then(
+            fn=lambda folder: gr.update(value=folder),
+            inputs=[model_folder_state],
+            outputs=[models_folder_display]
         )
 
         # Load model button
-        load_model_btn.click(
-            fn=handle_load_model,
-            inputs=[
-                model_dropdown, model_folder_state, vram_size, ctx_size,
-                gpu_select, cpu_select, cpu_threads,
-                states["llm"], states["models_loaded"]
-            ],
-            outputs=[
-                states["llm"], states["models_loaded"],
-                interaction_global_status, config_status, filter_status,
-                conversation_components["user_input"],
-                model_loaded_indicator
-            ]
+
+        def handle_load_unload_toggle(model_name, model_folder, vram_size, ctx_size, gpu, cpu, cpu_threads, llm_state, models_loaded_state):
+            if models_loaded_state or cfg.MODELS_LOADED:
+                result = handle_unload_model(llm_state, models_loaded_state)
+                return result + (gr.update(value="📥 Load Model", variant="primary"),)
+            result = handle_load_model(model_name, model_folder, vram_size, ctx_size, gpu, cpu, cpu_threads, llm_state, models_loaded_state)
+            loaded_now = result[1] if len(result) > 1 else False
+            return result + (gr.update(value=("📤 Unload Model" if loaded_now else "📥 Load Model"), variant=("stop" if loaded_now else "primary")),)
+
+        load_unload_btn.click(
+            fn=handle_load_unload_toggle,
+            inputs=[model_dropdown, model_folder_state, vram_size, ctx_size, gpu_select, cpu_select, cpu_threads, states["llm"], states["models_loaded"]],
+            outputs=[states["llm"], states["models_loaded"], interaction_global_status, library_status, library_status, conversation_components["user_input"], model_loaded_indicator, load_unload_btn],
         )
 
-        # Unload model button
-        unload_model_btn.click(
-            fn=handle_unload_model,
-            inputs=[states["llm"], states["models_loaded"]],
-            outputs=[
-                states["llm"], states["models_loaded"],
-                interaction_global_status, config_status, filter_status,
-                conversation_components["user_input"],
-                model_loaded_indicator
-            ]
-        )
+
+        def save_library_page(model, folder, ctx, batch):
+            if model and model not in ("No models found", "Select_a_model...", None, ""):
+                cfg.MODEL_NAME = model
+            if folder:
+                cfg.MODEL_FOLDER = folder
+            if ctx is not None:
+                cfg.CONTEXT_SIZE = int(ctx)
+            if batch is not None:
+                cfg.BATCH_SIZE = int(batch)
+            msg = save_llm_library()
+            return msg, msg
+
+        def restore_library_page():
+            msg = restore_llm_library_defaults()
+            available = get_available_models()
+            real = [m for m in available if m not in ("Select_a_model...", "No models found")]
+            selected = cfg.MODEL_NAME if cfg.MODEL_NAME in real else (real[0] if real else None)
+            return (gr.update(value=cfg.MODEL_FOLDER), gr.update(choices=real, value=selected, interactive=bool(real)),
+                    gr.update(value=cfg.CONTEXT_SIZE), gr.update(value=cfg.BATCH_SIZE), msg, msg)
+
+        save_library_btn.click(fn=save_library_page, inputs=[model_dropdown, model_folder_state, ctx_size, batch_size], outputs=[library_status, interaction_global_status])
+        restore_library_btn.click(fn=restore_library_page, inputs=[], outputs=[models_folder_display, model_dropdown, ctx_size, batch_size, library_status, interaction_global_status])
 
         # ── Main conversation handler ────────────────────────────────────────
         action_buttons["action"].click(
@@ -3282,7 +3372,7 @@ def launch_display():
             if not model_is_selected(new_model):
                 return (
                     llm_state, models_loaded_state,
-                    "No model selected — choose one on the Configuration page.",
+                    "No model selected — choose one on the LlmLibrary page.",
                     get_user_input_state(new_model),
                 )
 
@@ -3410,10 +3500,8 @@ def launch_display():
             print(f"[LOADING-MODE] {label}")
             return (
                 label,
-                gr.update(visible=mem_lock),   # model_loaded_indicator
-                gr.update(visible=mem_lock),   # load_model_btn
-                gr.update(visible=mem_lock),   # unload_model_btn
-                gr.update(visible=mem_lock)    # load_unload_column
+                gr.update(visible=mem_lock),
+                gr.update(visible=mem_lock),
             )
 
         loading_mode_radio.change(
@@ -3422,14 +3510,13 @@ def launch_display():
             outputs=[
                 config_status,
                 model_loaded_indicator,
-                load_model_btn,
-                unload_model_btn,
+                load_unload_btn,
                 load_unload_column
             ]
         )
 
         # Exit buttons
-        for _exit_btn in (exit_interaction, exit_config, exit_filtering, exit_info):
+        for _exit_btn in (exit_interaction, exit_config, exit_library, exit_filtering, exit_info):
             _exit_btn.click(
                 fn=shutdown_program,
                 inputs=[states["llm"], states["models_loaded"],
@@ -3688,14 +3775,9 @@ def launch_display():
         # silently absorbs half-finished edits made on the other.
 
         def _model_visibility():
-            """The four Model Configuration widgets that only Mem-Lock mode uses."""
             visible = (cfg.LOADING_MODE == "Mem-Lock")
-            return (
-                gr.update(visible=visible),   # load_model_btn
-                gr.update(visible=visible),   # unload_model_btn
-                gr.update(visible=visible),   # model_loaded_indicator
-                gr.update(visible=visible),   # load_unload_column
-            )
+            return (gr.update(visible=visible), gr.update(visible=visible))
+
 
         def save_configuration_page(
             layer_mode, cpu, cpu_threads_val, gpu, vram,
@@ -3718,6 +3800,8 @@ def launch_display():
             cfg.SELECTED_GPU          = gpu              if gpu              is not None else cfg.SELECTED_GPU
             cfg.VRAM_SIZE             = int(vram)        if vram             is not None else cfg.VRAM_SIZE
             cfg.SOUND_OUTPUT_DEVICE   = sound_device     if sound_device     is not None else cfg.SOUND_OUTPUT_DEVICE
+            # Mic is always the Windows default recording device (configured in OS Sound settings)
+            cfg.STT_INPUT_DEVICE      = "Default"
             cfg.SOUND_SAMPLE_RATE     = int(sample_rate) if sample_rate      is not None else cfg.SOUND_SAMPLE_RATE
             cfg.MODEL_NAME            = model            if model            is not None else cfg.MODEL_NAME
             cfg.CONTEXT_SIZE          = int(ctx)         if ctx              is not None else cfg.CONTEXT_SIZE
@@ -3737,7 +3821,7 @@ def launch_display():
 
             # Mem-Lock: if the user changed the model (or other load-binding
             # settings) while a model is resident, unload immediately so the
-            # next Send Input auto-loads under the new selection. One-Shot
+            # next Submit Input auto-loads under the new selection. One-Shot
             # already unloads after each response, so this is mainly for
             # Mem-Lock; still safe to run for either mode.
             needs_unload = False
@@ -3828,9 +3912,7 @@ def launch_display():
         _status_outputs = [
             interaction_global_status, config_status, filter_status, info_status,
         ]
-        _model_vis_outputs = [
-            load_model_btn, unload_model_btn, model_loaded_indicator, load_unload_column,
-        ]
+        _model_vis_outputs = [load_unload_btn, model_loaded_indicator]
 
         _user_input_output = [conversation_components["user_input"]]
 
@@ -4227,6 +4309,10 @@ def launch_display():
         # TTS heartbeat
         tts_timer = gr.Timer(value=1.0, active=True)
         tts_timer.tick(fn=tts_heartbeat, inputs=[], outputs=[tts_state_box])
+
+        stt_timer = gr.Timer(value=0.4, active=True)
+        stt_timer.tick(fn=stt_partial_tick, inputs=[conversation_components["user_input"]], outputs=[conversation_components["user_input"]])
+        action_buttons["stt_mic"].click(fn=toggle_stt_mic, inputs=[conversation_components["user_input"]], outputs=[action_buttons["stt_mic"], conversation_components["user_input"], interaction_global_status])
 
         # Mem-Lock idle auto-unload timer (fires every 60 s; unloads after 20 min inactivity)
         def idle_unload_tick(llm_st, loaded_st):

@@ -18,6 +18,7 @@ import numpy as np
 # section further down for what each one holds.
 CONFIGURATION_PATH = Path("data/configuration.json")
 PREFERENCES_PATH   = Path("data/preferences.json")
+LLM_LIBRARY_PATH   = Path("data/llm_library.json")
 
 # =============================================================================
 # SYSTEM STATE VARIABLES
@@ -168,6 +169,15 @@ TTS_PACK = 1
 TTS_ENABLED_VOICES = []    # list of voice IDs (strings)
 TTS_DEFAULT_VOICE_ID = None
 TTS_DEFAULT_VOICE_NAME = None
+
+STT_ENABLED = False
+STT_ENGINE = "none"
+STT_MODEL = "small.en"          # from installer constants.ini [stt]; shown on About/Debug
+STT_LANGUAGE = "en"
+STT_ACCENT_PREF = "american"
+# Always the Windows default recording device — configured via OS Sound settings
+STT_INPUT_DEVICE = "Default"
+STT_INPUT_DEVICE_INDEX = None
 
 # =============================================================================
 # Per-Message TTS Button State (4-phase cycle: play -> generating -> playing -> idle)
@@ -664,7 +674,17 @@ def load_system_ini():
             TTS_DEFAULT_VOICE_ID = None
             TTS_DEFAULT_VOICE_NAME = None
             TTS_ENABLED_VOICES   = []
-            KOKORO_LANG_CODE     = 'a' 
+            KOKORO_LANG_CODE     = 'a'
+
+        global STT_MODEL, STT_ENGINE
+        if 'stt' in config:
+            stt_sec = config['stt']
+            STT_MODEL = stt_sec.get('stt_model', 'small.en')
+            STT_ENGINE = stt_sec.get('stt_engine', 'faster-whisper')
+            print(f"[INI] STT model: {STT_MODEL} (engine={STT_ENGINE})")
+        else:
+            STT_MODEL = "small.en"
+            print("[INI] No [stt] section — STT defaults to small.en when available")
 
         return True
 
@@ -902,11 +922,62 @@ def _post_load_corrections():
             SELECTED_GPU = "Auto-Select"
 
 
+
+LLM_LIBRARY_DEFAULTS = {
+    "model_dir": "models",
+    "model_name": "Select_a_model...",
+    "context_size": 32768,
+    "n_batch": 1024,
+}
+
+def load_llm_library():
+    global MODEL_FOLDER, MODEL_NAME, CONTEXT_SIZE, BATCH_SIZE
+    path = LLM_LIBRARY_PATH
+    data = dict(LLM_LIBRARY_DEFAULTS)
+    if path.exists():
+        try:
+            import json
+            with open(path, "r", encoding="utf-8") as f:
+                stored = json.load(f)
+            if isinstance(stored, dict):
+                data.update({k: stored[k] for k in LLM_LIBRARY_DEFAULTS if k in stored})
+        except Exception as e:
+            print(f"[LLM-LIBRARY] Could not read {path}: {e}")
+    MODEL_FOLDER = data.get("model_dir") or LLM_LIBRARY_DEFAULTS["model_dir"]
+    MODEL_NAME = data.get("model_name") or LLM_LIBRARY_DEFAULTS["model_name"]
+    CONTEXT_SIZE = int(data.get("context_size") or LLM_LIBRARY_DEFAULTS["context_size"])
+    BATCH_SIZE = int(data.get("n_batch") or LLM_LIBRARY_DEFAULTS["n_batch"])
+    print(f"[LLM-LIBRARY] Folder={MODEL_FOLDER} Model={MODEL_NAME} ctx={CONTEXT_SIZE} batch={BATCH_SIZE}")
+    return data
+
+def save_llm_library():
+    import json
+    path = LLM_LIBRARY_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {"model_dir": MODEL_FOLDER, "model_name": MODEL_NAME,
+               "context_size": CONTEXT_SIZE, "n_batch": BATCH_SIZE}
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        return f"LlmLibrary saved → {path}"
+    except Exception as e:
+        return f"LlmLibrary save failed: {e}"
+
+def restore_llm_library_defaults():
+    global MODEL_FOLDER, MODEL_NAME, CONTEXT_SIZE, BATCH_SIZE
+    MODEL_FOLDER = LLM_LIBRARY_DEFAULTS["model_dir"]
+    MODEL_NAME = LLM_LIBRARY_DEFAULTS["model_name"]
+    CONTEXT_SIZE = LLM_LIBRARY_DEFAULTS["context_size"]
+    BATCH_SIZE = LLM_LIBRARY_DEFAULTS["n_batch"]
+    save_llm_library()
+    return "LlmLibrary restored to defaults"
+
 def load_config():
     """Load both settings files. configuration.json is required, preferences.json
     falls back to defaults so a missing or hand-deleted file is not fatal."""
     _apply_configuration(_read_settings(CONFIGURATION_PATH, "configuration", required=True))
     _apply_preferences(_read_settings(PREFERENCES_PATH, "preferences", required=False))
+    load_llm_library()
 
     print(f"[CONFIG] LOADING_MODE read as: {LOADING_MODE}")
     _post_load_corrections()

@@ -1259,3 +1259,276 @@ def speak_last_response(session_messages: list) -> str:
     if speak_text(text, voice_id, output_device, sample_rate):
         return "Speaking response..."
     return "Failed to start speech"
+
+# =============================================================================
+# SPEECH-TO-TEXT (STT)
+# =============================================================================
+# Continuous mic capture with utterance segmentation.
+# Each completed phrase is pushed as a *delta* (new text only). The UI tick
+# appends deltas to whatever is currently in the user-input box, so the user
+# can freely delete/edit partial STT without toggling the mic.
+# =============================================================================
+_stt_model = None
+_stt_lock = threading.Lock()
+_stt_stop_flag = threading.Event()
+_stt_thread = None
+_stt_partial_queue = queue.Queue()
+_stt_listening = False
+_STT_SAMPLE_RATE = 16000
+
+# Utterance detection (RMS + silence). Tuned for conversational dictation with
+# the small.en model: longer speech windows, less aggressive chopping.
+_STT_RMS_SPEECH = 0.010          # speech onset threshold
+_STT_SILENCE_END_MS = 1100       # silence after speech to close an utterance
+_STT_MIN_SPEECH_MS = 350         # ignore clicks / noise shorter than this
+_STT_MAX_UTTERANCE_S = 18.0      # hard cap so one long monologue still flushes
+_STT_CHUNK_S = 0.1               # InputStream block size in seconds
+
+
+def _stt_cache_dir():
+    return Path(__file__).resolve().parent.parent / "data" / "stt_models"
+
+
+def detect_stt_engine():
+    try:
+        from faster_whisper import WhisperModel  # noqa: F401
+        return "faster-whisper"
+    except ImportError:
+        return "none"
+
+
+def _resolve_stt_model_name():
+    return getattr(cfg, "STT_MODEL", None) or "small.en"
+
+
+def get_stt_input_devices():
+    choices = ["Default"]
+    try:
+        import sounddevice as sd
+        for i, dev in enumerate(sd.query_devices()):
+            if int(dev.get("max_input_channels", 0) or 0) > 0:
+                choices.append(f"{i}: {str(dev.get('name', f'Device {i}')).strip()}")
+    except Exception as e:
+        print(f"[STT] Could not enumerate input devices: {e}")
+    return choices
+
+
+def resolve_stt_input_device_index(label):
+    if not label or label == "Default":
+        return None
+    try:
+        return int(str(label).split(":", 1)[0].strip())
+    except Exception:
+        return None
+
+
+def _get_or_create_stt_model():
+    global _stt_model
+    with _stt_lock:
+        if _stt_model is not None:
+            return _stt_model
+        from faster_whisper import WhisperModel
+        cache = str(_stt_cache_dir())
+        model_name = _resolve_stt_model_name()
+        local = _stt_cache_dir() / model_name
+        model_path = str(local) if local.is_dir() else model_name
+        threads = getattr(cfg, "CPU_THREADS", None) or max(1, (getattr(cfg, "CPU_LOGICAL_CORES", 4) // 2))
+        threads = max(1, min(int(threads), getattr(cfg, "CPU_LOGICAL_CORES", 8)))
+        _stt_model = WhisperModel(
+            model_path,
+            device="cpu",
+            compute_type="int8",
+            cpu_threads=threads,
+            download_root=cache,
+        )
+        print(f"[STT] Model ready ({model_name}, int8, threads={threads})")
+        return _stt_model
+
+
+def _stt_listen_loop():
+    """Capture mic audio, segment on silence, transcribe full utterances.
+
+    Puts *new phrase text only* onto `_stt_partial_queue`. The Gradio timer
+    appends each phrase to the live user-input value so edits are preserved.
+    """
+    global _stt_listening
+    try:
+        import sounddevice as sd
+        import numpy as np
+        model = _get_or_create_stt_model()
+    except Exception as e:
+        print(f"[STT] Init failed: {e}")
+        _stt_listening = False
+        return
+
+    blocksize = max(1, int(_STT_SAMPLE_RATE * _STT_CHUNK_S))
+    chunks_per_sec = max(1, int(1.0 / _STT_CHUNK_S))
+    min_speech_chunks = max(1, int((_STT_MIN_SPEECH_MS / 1000.0) * chunks_per_sec))
+    max_utterance_chunks = max(min_speech_chunks, int(_STT_MAX_UTTERANCE_S * chunks_per_sec))
+
+    # Rolling ring of recent audio chunks; speech_chunks holds the current
+    # utterance from onset until flush.
+    ring = []
+    speech_chunks = []
+    silence_ms = 0
+    speech_active = False
+
+    def _callback(indata, frames, time_info, status):
+        if _stt_stop_flag.is_set():
+            raise sd.CallbackStop()
+        ring.append(indata.copy())
+        # Keep a short pre-roll of non-speech so we don't clip onsets
+        if not speech_active and len(ring) > chunks_per_sec:
+            del ring[:-chunks_per_sec]
+
+    def _flush_utterance():
+        nonlocal speech_chunks, silence_ms, speech_active
+        if len(speech_chunks) < min_speech_chunks:
+            speech_chunks = []
+            silence_ms = 0
+            speech_active = False
+            return
+        try:
+            audio = np.concatenate(speech_chunks, axis=0).flatten()
+            # Pad ends slightly so Whisper sees clearer boundaries
+            pad = int(0.05 * _STT_SAMPLE_RATE)
+            if pad > 0:
+                audio = np.pad(audio, (pad, pad), mode="constant")
+            segments, _info = model.transcribe(
+                audio,
+                language="en",
+                beam_size=1,
+                best_of=1,
+                temperature=0.0,
+                vad_filter=True,
+                vad_parameters=dict(
+                    threshold=0.45,
+                    min_silence_duration_ms=400,
+                    speech_pad_ms=200,
+                    min_speech_duration_ms=200,
+                ),
+                condition_on_previous_text=False,
+                without_timestamps=True,
+            )
+            text = " ".join(s.text.strip() for s in segments if s.text and s.text.strip())
+            text = " ".join(text.split())  # collapse internal whitespace
+            if text:
+                _stt_partial_queue.put(text)
+                print(f"[STT] Utterance: {text[:80]}{'…' if len(text) > 80 else ''}")
+        except Exception as te:
+            print(f"[STT] Transcribe error: {te}")
+        speech_chunks = []
+        silence_ms = 0
+        speech_active = False
+
+    try:
+        with sd.InputStream(
+            samplerate=_STT_SAMPLE_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=blocksize,
+            callback=_callback,
+            device=None,
+        ):
+            while not _stt_stop_flag.is_set():
+                time.sleep(_STT_CHUNK_S)
+                if not ring:
+                    continue
+                # Consume everything currently in the ring
+                batch = ring[:]
+                ring.clear()
+                for chunk in batch:
+                    rms = float(np.sqrt(np.mean(chunk.astype(np.float64) ** 2)))
+                    if rms >= _STT_RMS_SPEECH:
+                        if not speech_active:
+                            # Start utterance; include a little pre-roll from ring
+                            # (already limited) so the first phoneme is not cut.
+                            speech_active = True
+                            silence_ms = 0
+                        speech_chunks.append(chunk)
+                        silence_ms = 0
+                    else:
+                        if speech_active:
+                            speech_chunks.append(chunk)  # keep trailing silence in segment
+                            silence_ms += int(_STT_CHUNK_S * 1000)
+                            if silence_ms >= _STT_SILENCE_END_MS:
+                                _flush_utterance()
+                        # else: pure silence, ignore
+                    if speech_active and len(speech_chunks) >= max_utterance_chunks:
+                        _flush_utterance()
+            # Stream stopped — flush any trailing speech
+            if speech_active and speech_chunks:
+                _flush_utterance()
+    except Exception as e:
+        if not _stt_stop_flag.is_set():
+            print(f"[STT] Stream error: {e}")
+    finally:
+        _stt_listening = False
+
+
+def start_stt_listening():
+    global _stt_thread, _stt_listening
+    if _stt_listening:
+        return True
+    if detect_stt_engine() == "none":
+        return False
+    _stt_stop_flag.clear()
+    while not _stt_partial_queue.empty():
+        try:
+            _stt_partial_queue.get_nowait()
+        except queue.Empty:
+            break
+    _stt_listening = True
+    _stt_thread = threading.Thread(target=_stt_listen_loop, daemon=True)
+    _stt_thread.start()
+    return True
+
+
+def stop_stt_listening():
+    global _stt_listening, _stt_thread
+    _stt_stop_flag.set()
+    _stt_listening = False
+    if _stt_thread and _stt_thread.is_alive():
+        _stt_thread.join(timeout=2.5)
+    _stt_thread = None
+
+
+def is_stt_listening():
+    return _stt_listening
+
+
+def get_stt_partial():
+    """Return the next completed phrase (delta), or None if none pending.
+
+    Multiple phrases may be queued; callers should drain by repeated calls
+    or use get_stt_partials().
+    """
+    try:
+        return _stt_partial_queue.get_nowait()
+    except queue.Empty:
+        return None
+
+
+def get_stt_partials():
+    """Drain and return all completed phrases currently queued."""
+    out = []
+    while True:
+        try:
+            out.append(_stt_partial_queue.get_nowait())
+        except queue.Empty:
+            break
+    return out
+
+
+def initialize_stt():
+    engine = detect_stt_engine()
+    cfg.STT_ENGINE = engine
+    cfg.STT_ENABLED = (engine != "none")
+    if engine == "faster-whisper":
+        try:
+            threading.Thread(target=_get_or_create_stt_model, daemon=True).start()
+            return True
+        except Exception:
+            cfg.STT_ENABLED = False
+            return False
+    return False
