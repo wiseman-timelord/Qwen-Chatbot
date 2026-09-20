@@ -200,6 +200,8 @@ def main():
         # Initialize TTS AFTER load_config so saved voice selection is respected
         from scripts.tools import initialize_tts
         initialize_tts()
+        from scripts.tools import initialize_stt
+        initialize_stt()
 
         # Then initialize backend settings (paths, validation)
         initialize_backend_settings()
