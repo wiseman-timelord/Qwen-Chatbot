@@ -49,10 +49,10 @@ For compile options; If on PATH, ask AI how to check its on path, and as applica
 Remember while you can update model support via editing llama.cpp version in the installer.py ie b9999 of whatever the [latest release](https://github.com/ggml-org/llama.cpp/releases) is, but there is also identifiers/handling for each model/variant within the main program, so that wont always work, however...
 - Specifically only Qwen versions 3/3.5/3.6/3.8 in 4B-35BA3B, including, Abliterated, Heretic, HuiHui, Uncensored etc. 
 - Gguf files in q5 quantization are advised, as scores are 0.1-5% better, unless this would cause excessive overflow into system ram and end up too slow, in which case use minimum q4.
-- To find a model, for example [search HuggingFace.Co](https://huggingface.co/models?search=qwen%203.8%20gguf), and locate a gguf file to fit your vram.
-- Generally use a smaller Context Length ie 32768 for a websearch, larger context tend to be slower and use more memory, but there are options for up to 131072 tokens Context_Length.
+- To find a model, for example [search HuggingFace.Co](https://huggingface.co/models?search=qwen%203.8%20gguf), and locate a gguf file to fit your vram. 
+- For, a small competent model and people unsure of which model, here is [Qwen3.8-9B-abliterated-25-GGUF](https://huggingface.co/MegaPanchamZ/Qwen3.8-9B-abliterated-25-GGUF), its good for its size and ok for speed on my 8GB card.
+- Generally use a smaller Context Length ie 32768 for a websearch, larger context tend to be slower and use more memory, but there are options for up to, 262144 tokens of Context_Length and 16384 tokens of Batch Output. The newer Qwen models have larger token capacities.
 - Gguf/Llama.Cpp does not have Sliding Context window, but the program does have RAG and some other thing, unsure. 
-- The newer Qwen models have larger Batch_Output, while in program is max 8192 tokens, options can be edited in configure.py.
 
 ## Usage
 1. Right-click `Qwen-Chatbot.bat` and Run as Administrator.
