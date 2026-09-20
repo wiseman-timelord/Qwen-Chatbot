@@ -379,10 +379,9 @@ def get_debug_globals_text():
     lines.append(f"CPU_PHYSICAL_CORES:  {getattr(cfg, 'CPU_PHYSICAL_CORES', 'N/A')}")
     lines.append(f"CPU_LOGICAL_CORES:  {getattr(cfg, 'CPU_LOGICAL_CORES', 'N/A')}")
     lines.append(f"FILTER_MODE:  {getattr(cfg, 'FILTER_MODE', 'N/A')}")
-    # STT is chosen at install time (constants.ini) — not a Configuration-page control
+    # TTS / STT engine and model are chosen at install time (constants.ini)
+    lines.append(f"TTS_MODEL:  {getattr(cfg, 'TTS_ENGINE', 'N/A')}")
     lines.append(f"STT_MODEL:  {getattr(cfg, 'STT_MODEL', 'N/A')}")
-    lines.append(f"STT_ENGINE:  {getattr(cfg, 'STT_ENGINE', 'N/A')}")
-    lines.append(f"STT_ENABLED:  {getattr(cfg, 'STT_ENABLED', False)}")
     return "\n".join(lines)
 
 
@@ -2970,15 +2969,22 @@ def launch_display():
                             choices=cfg.BATCH_OPTIONS, label="Batch Size",
                             value=cfg.BATCH_SIZE, interactive=True,
                         )
-                        _btn_label = "📤 Unload Model" if cfg.MODELS_LOADED else "📥 Load Model"
-                        _btn_variant = "stop" if cfg.MODELS_LOADED else "primary"
-                        load_unload_btn = gr.Button(
-                            _btn_label, variant=_btn_variant,
-                            visible=_mem_lock_mode, elem_classes=["config-btn"],
-                        )
-                        load_model_btn = load_unload_btn
-                        unload_model_btn = load_unload_btn
-                        load_unload_column = load_unload_btn
+                        with gr.Row():
+                            _btn_label = "📤 Reload Model" if cfg.MODELS_LOADED else "📥 Load Model"
+                            _btn_variant = "stop" if cfg.MODELS_LOADED else "primary"
+                            load_model_btn = gr.Button(
+                                _btn_label, variant=_btn_variant,
+                                visible=_mem_lock_mode, elem_classes=["config-btn"],
+                                scale=1,
+                            )
+                            unload_model_btn = gr.Button(
+                                "📤 Unload Model", variant="stop",
+                                visible=_mem_lock_mode, elem_classes=["config-btn"],
+                                scale=1,
+                            )
+                        # Compatibility aliases used by visibility / save handlers
+                        load_unload_btn = load_model_btn
+                        load_unload_column = load_model_btn
 
                 gr.Markdown("---")
                 with gr.Row():
@@ -3168,7 +3174,7 @@ def launch_display():
                     gr.Markdown("### Runtime Globals (Debug)")
                     debug_display = gr.Textbox(
                         label="Critical Globals (click Refresh to update)",
-                        value=get_debug_globals_text(), lines=12, interactive=False
+                        value=get_debug_globals_text(), lines=14, interactive=False
                     )
                     refresh_debug_btn = gr.Button("🔄 Refresh Debug Info", variant="secondary")
 
@@ -3244,20 +3250,29 @@ def launch_display():
             outputs=[models_folder_display]
         )
 
-        # Load model button
+        # Load / Reload and Unload model buttons (Mem-Lock mode only)
 
-        def handle_load_unload_toggle(model_name, model_folder, vram_size, ctx_size, gpu, cpu, cpu_threads, llm_state, models_loaded_state):
-            if models_loaded_state or cfg.MODELS_LOADED:
-                result = handle_unload_model(llm_state, models_loaded_state)
-                return result + (gr.update(value="📥 Load Model", variant="primary"),)
+        def handle_load_model_click(model_name, model_folder, vram_size, ctx_size, gpu, cpu, cpu_threads, llm_state, models_loaded_state):
             result = handle_load_model(model_name, model_folder, vram_size, ctx_size, gpu, cpu, cpu_threads, llm_state, models_loaded_state)
             loaded_now = result[1] if len(result) > 1 else False
-            return result + (gr.update(value=("📤 Unload Model" if loaded_now else "📥 Load Model"), variant=("stop" if loaded_now else "primary")),)
+            return result + (
+                gr.update(value=("📤 Reload Model" if loaded_now else "📥 Load Model"),
+                          variant=("stop" if loaded_now else "primary")),
+            )
 
-        load_unload_btn.click(
-            fn=handle_load_unload_toggle,
+        def handle_unload_model_click(llm_state, models_loaded_state):
+            result = handle_unload_model(llm_state, models_loaded_state)
+            return result + (gr.update(value="📥 Load Model", variant="primary"),)
+
+        load_model_btn.click(
+            fn=handle_load_model_click,
             inputs=[model_dropdown, model_folder_state, vram_size, ctx_size, gpu_select, cpu_select, cpu_threads, states["llm"], states["models_loaded"]],
-            outputs=[states["llm"], states["models_loaded"], interaction_global_status, library_status, library_status, conversation_components["user_input"], model_loaded_indicator, load_unload_btn],
+            outputs=[states["llm"], states["models_loaded"], interaction_global_status, library_status, library_status, conversation_components["user_input"], model_loaded_indicator, load_model_btn],
+        )
+        unload_model_btn.click(
+            fn=handle_unload_model_click,
+            inputs=[states["llm"], states["models_loaded"]],
+            outputs=[states["llm"], states["models_loaded"], interaction_global_status, library_status, library_status, conversation_components["user_input"], model_loaded_indicator, load_model_btn],
         )
 
 
@@ -3490,7 +3505,7 @@ def launch_display():
 
         def handle_loading_mode_change(mode):
             if mode == _last_loading_mode[0]:
-                return gr.update(), gr.update(), gr.update(), gr.update(), gr.update()  # 5 updates
+                return gr.update(), gr.update(), gr.update(), gr.update()
             _last_loading_mode[0] = mode
             cfg.LOADING_MODE = mode
             cfg.MLOCK = (mode == "Mem-Lock")
@@ -3502,6 +3517,7 @@ def launch_display():
                 label,
                 gr.update(visible=mem_lock),
                 gr.update(visible=mem_lock),
+                gr.update(visible=mem_lock),
             )
 
         loading_mode_radio.change(
@@ -3510,8 +3526,8 @@ def launch_display():
             outputs=[
                 config_status,
                 model_loaded_indicator,
-                load_unload_btn,
-                load_unload_column
+                load_model_btn,
+                unload_model_btn,
             ]
         )
 
@@ -3776,7 +3792,11 @@ def launch_display():
 
         def _model_visibility():
             visible = (cfg.LOADING_MODE == "Mem-Lock")
-            return (gr.update(visible=visible), gr.update(visible=visible))
+            return (
+                gr.update(visible=visible),  # load_model_btn
+                gr.update(visible=visible),  # unload_model_btn
+                gr.update(visible=visible),  # model_loaded_indicator
+            )
 
 
         def save_configuration_page(
@@ -3912,7 +3932,7 @@ def launch_display():
         _status_outputs = [
             interaction_global_status, config_status, filter_status, info_status,
         ]
-        _model_vis_outputs = [load_unload_btn, model_loaded_indicator]
+        _model_vis_outputs = [load_model_btn, unload_model_btn, model_loaded_indicator]
 
         _user_input_output = [conversation_components["user_input"]]
 
